@@ -1,0 +1,18 @@
+:root {
+  --color-bg: #f4f2ea;
+  --color-surface: #fffcf6;
+  --color-line: #d7d0c3;
+  --color-fg: #1f1b16;
+  --color-muted: #6e6558;
+  --color-accent: #b5532d;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --radius-panel: 1rem;
+  --shadow-panel: 0 20px 40px rgba(31, 27, 22, 0.08);
+}

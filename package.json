@@ -1,0 +1,16 @@
+{
+  "name": "symphony",
+  "private": true,
+  "packageManager": "pnpm@10.6.0",
+  "scripts": {
+    "lint": "pnpm --dir apps/web lint",
+    "typecheck": "pnpm --dir apps/web typecheck",
+    "format": "pnpm --dir apps/web format",
+    "web:dev": "pnpm --dir apps/web start",
+    "web:build": "pnpm --dir apps/web build",
+    "web:lint": "pnpm --dir apps/web lint",
+    "web:test": "pnpm --dir apps/web test",
+    "web:typecheck": "pnpm --dir apps/web typecheck",
+    "web:format": "pnpm --dir apps/web format"
+  }
+}

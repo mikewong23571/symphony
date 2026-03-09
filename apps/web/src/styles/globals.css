@@ -1,0 +1,23 @@
+@import "./tokens.css";
+@import "./theme.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: var(--color-bg);
+  color: var(--color-fg);
+}
+
+body {
+  min-height: 100vh;
+}
+
+code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+}

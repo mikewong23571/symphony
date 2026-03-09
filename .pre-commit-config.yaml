@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.11.0
+    hooks:
+      - id: ruff
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  - repo: local
+    hooks:
+      - id: mypy-api
+        name: mypy-api
+        entry: uv run mypy apps/api
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: eslint-web
+        name: eslint-web
+        entry: pnpm --dir apps/web lint
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: typecheck-web
+        name: typecheck-web
+        entry: pnpm --dir apps/web typecheck
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: prettier-web
+        name: prettier-web
+        entry: pnpm --dir apps/web format
+        language: system
+        pass_filenames: false
+        always_run: true

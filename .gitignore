@@ -1,0 +1,30 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Django
+db.sqlite3
+staticfiles/
+media/
+
+# Node
+node_modules/
+dist/
+.angular/
+coverage/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Editors
+.idea/
+.vscode/
