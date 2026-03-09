@@ -12,6 +12,20 @@ export default {
         muted: "var(--color-muted)",
         accent: "var(--color-accent)"
       },
+      fontFamily: {
+        sans: ["var(--font-sans)"],
+        mono: ["var(--font-mono)"]
+      },
+      fontSize: {
+        body: ["var(--text-body)", { lineHeight: "var(--leading-body)" }],
+        display: [
+          "var(--text-display)",
+          { lineHeight: "var(--leading-display)" }
+        ]
+      },
+      letterSpacing: {
+        ui: "var(--tracking-ui)"
+      },
       borderRadius: {
         panel: "var(--radius-panel)"
       },
@@ -25,6 +39,13 @@ export default {
         "token-4": "var(--space-4)",
         "token-6": "var(--space-6)",
         "token-8": "var(--space-8)"
+      },
+      transitionDuration: {
+        fast: "var(--motion-fast)",
+        base: "var(--motion-base)"
+      },
+      transitionTimingFunction: {
+        standard: "var(--ease-standard)"
       }
     }
   },

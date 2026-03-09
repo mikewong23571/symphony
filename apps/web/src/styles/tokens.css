@@ -6,6 +6,14 @@
   --color-muted: #6e6558;
   --color-accent: #b5532d;
 
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", "SFMono-Regular", monospace;
+  --text-body: 1rem;
+  --text-display: 1.875rem;
+  --tracking-ui: 0.18em;
+  --leading-body: 1.6;
+  --leading-display: 1.15;
+
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
@@ -15,4 +23,8 @@
 
   --radius-panel: 1rem;
   --shadow-panel: 0 20px 40px rgba(31, 27, 22, 0.08);
+
+  --motion-fast: 120ms;
+  --motion-base: 220ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
 }
