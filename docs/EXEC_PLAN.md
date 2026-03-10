@@ -22,7 +22,12 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 - [x] 2026-03-10 14:46Z: Re-audited Milestone 3 against the current backend code and tests, confirmed that restart recovery persistence and corrupt-recovery fallback behavior were already implemented, and re-ran the Milestone 3 focused suite with `98 passed in 4.22s`.
 - [x] 2026-03-10 14:47Z: Re-audited Milestone 4 against the current backend code and tests, confirmed that workflow-configurable observability settings and reload application behavior were already implemented, and re-ran the Milestone 4 focused suite with `98 passed in 4.22s`.
 - [x] 2026-03-10 14:51Z: Updated `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan so milestones 1-4 reflect the actual implemented baseline, leaving only Milestones 5 and 6 as open roadmap work.
-- [ ] Milestone 5 is not started: replace the Angular placeholder screen with real runtime pages and record manual and automated frontend validation here.
+- [x] 2026-03-10 12:54Z: Replaced the Angular placeholder bootstrap with a routed standalone app shell, added dashboard/issue/runs feature pages, introduced a shared runtime API/presenter layer, and wired the dev server to proxy `/api/*` traffic to Django during local development.
+- [x] 2026-03-10 12:55Z: Ran the Milestone 5 frontend validation commands in `apps/web` and observed `pnpm lint` -> pass, `pnpm typecheck` -> pass, and `pnpm test` -> `1 passed (4 tests)` during the initial implementation pass.
+- [x] 2026-03-10 13:08Z: Re-ran the Milestone 5 frontend validation commands during the review/fix loop and observed `pnpm lint` -> pass, `pnpm typecheck` -> pass, `pnpm test` -> `1 passed (5 tests)`, and `pnpm build` -> pass with output written to `apps/web/dist/web`.
+- [!] 2026-03-10 13:10Z: Re-ran the repository-wide quality gates after the review fixes using `UV_CACHE_DIR=.uv-cache` because the default `uv` cache path is not writable in this execution environment. `make lint` -> pass and `make typecheck` -> pass. `make test` reached `214 passed, 1 failed`; the remaining failure is `apps/api/tests/unit/api/test_server.py::test_start_runtime_http_server_serves_wsgi_requests_and_closes_cleanly`, which cannot bind a loopback socket in this execution environment (`PermissionError: [Errno 1] Operation not permitted`).
+- [x] 2026-03-10 12:58Z: Completed a manual frontend smoke during the initial implementation pass using a temporary runtime snapshot, Django on `127.0.0.1:8000`, Angular dev-server on `127.0.0.1:4200`, and `playwright-cli`. Verified the dashboard count/totals route, issue detail for `SYM-123`, stale-state handling when `/runs` encountered an aged snapshot, fresh `/runs` retry data after renewing the snapshot timestamps, and a proxied `POST /api/v1/refresh` that returned `202 Accepted`, created the refresh-request file, and reloaded the dashboard state.
+- [x] 2026-03-10 12:58Z: Marked Milestone 5 complete by updating `docs/ROADMAP.md` and this ExecPlan to match the delivered Angular runtime pages, leaving Milestone 6 as the only remaining roadmap work.
 - [ ] Milestone 6 is not started: introduce first-class tracker write APIs and validate them with backend tests and an end-to-end operator-facing flow.
 
 ## Surprises & Discoveries
@@ -66,9 +71,9 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 4 are now recorded as complete. The repository already met those backend roadmap goals before this closeout: structured logs are operator-visible, workspace prep and prompt taxonomy match the spec intent, restart recovery persists retry/session summaries, and workflow front matter already configures observability paths and freshness. This closeout re-ran the milestone-focused pytest suites, synchronized the living docs with the observed behavior, and removed stale gap language from the roadmap audit.
+Milestones 1 through 5 are now recorded as complete. The repository already met the first four backend roadmap goals before this closeout, and Milestone 5 now adds a real Angular operator surface with routed dashboard, issue detail, and runs pages backed by the existing Django runtime APIs. This closeout re-ran the milestone-focused validation commands, exercised the frontend manually against a temporary runtime snapshot, synchronized the living docs with the observed behavior, and removed stale roadmap language about the Angular app being unimplemented.
 
-The remaining roadmap work is now concentrated in Milestone 5 (the Angular runtime pages) and Milestone 6 (first-class tracker write APIs). Future contributors should still begin those milestones with a fresh code audit, because this repository has already shown that implementation can get ahead of the active plan.
+The remaining roadmap work is now concentrated only in Milestone 6 (first-class tracker write APIs). Future contributors should still begin that milestone with a fresh code audit, because this repository has already shown that implementation can get ahead of the active plan.
 
 ## Context and Orientation
 
@@ -125,6 +130,8 @@ Implement a typed `observability` section in `apps/api/symphony/workflow/config.
 This milestone also closes the loop on documentation hygiene. `WORKFLOW.md` configuration examples, `docs/ROADMAP.md`, and any lingering “environment variable only” wording in the code comments or docs must be updated so the repository has one coherent story about where observability behavior is configured.
 
 ### Milestone 5: Build the Angular runtime pages
+
+Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
 
 At the end of this milestone, the operator-facing web experience will no longer be the server-rendered fallback alone. The Angular app will have real routes, real data fetching, and clear runtime state handling while still consuming the existing backend APIs rather than duplicating orchestrator logic in the browser.
 
@@ -277,6 +284,8 @@ The Angular route tree introduced in Milestone 5 should end up conceptually like
     /runs          -> active runs and retry queue
 
 If a later milestone needs to add more routes or tracker-mutation controls, document them here as they are introduced rather than leaving them implicit in the source tree.
+
+For local frontend development after Milestone 5, `apps/web/proxy.conf.json` proxies `/api/*` requests from Angular dev-server to `http://127.0.0.1:8000`, which keeps the browser app same-origin from the developer’s perspective while preserving Django as the owner of the runtime API surface.
 
 ## Interfaces and Dependencies
 

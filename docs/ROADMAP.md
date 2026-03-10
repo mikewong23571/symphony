@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: Updated after Milestone 4 re-audit on 2026-03-10
+Status: Updated after Milestone 5 closeout on 2026-03-10
 
 Purpose: Record the major remaining implementation work after the core Symphony execution path
 landed, grouped by how each item relates to `docs/SPEC.md`.
@@ -24,8 +24,8 @@ The current implementation already has the main execution spine in place:
 - optional loopback HTTP dashboard/control surface
 
 This means the repository is no longer blocked on foundational orchestration plumbing. After the
-2026-03-10 re-audit, the main remaining work is product delivery plus the still-optional tracker
-write extension.
+2026-03-10 Milestone 5 closeout, the main remaining work is the still-optional tracker write
+extension.
 
 ## Recently Completed
 
@@ -86,6 +86,32 @@ Delivered behavior:
 Validation recorded in `docs/EXEC_PLAN.md`:
 - Milestone 4 focused suite: `98 passed in 4.22s`
 
+### Angular Frontend Runtime Pages
+
+This workstream is complete.
+
+Delivered behavior:
+- a real Angular standalone app shell now boots from `apps/web/src/app` with routes for dashboard,
+  issue detail, and runs
+- the dashboard, issue detail, and runs views all consume the existing `/api/v1/state`,
+  `/api/v1/<issue_identifier>`, and `/api/v1/refresh` endpoints through a shared typed API layer
+- the frontend handles loading, empty, unavailable, and stale snapshot states deliberately and
+  exposes refresh controls without moving orchestration logic into the browser
+- Angular dev-server now proxies `/api/*` requests to Django during local development while the
+  server-rendered dashboard remains available as a fallback
+- Vitest coverage exists for the pure presenter/formatter layer that normalizes runtime API payloads
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- frontend checks: `pnpm lint`, `pnpm typecheck`, and `pnpm test` are green in the current review
+  session; `pnpm build` still needs rerun on a host where Angular CLI does not crash with the
+  local Node runtime
+- repository-wide gates: `make lint` and `make typecheck` are green in the current review session;
+  `make test` is blocked here by a loopback-socket permission error in
+  `apps/api/tests/unit/api/test_server.py`
+- manual smoke: the initial implementation pass reported successful dashboard, issue detail, runs,
+  stale-state, and proxied refresh checks against local Django + Angular dev servers using
+  `playwright-cli`
+
 ## Core Conformance Workstreams
 
 No currently confirmed core conformance workstreams remain after the 2026-03-10 re-audit.
@@ -111,41 +137,7 @@ Why it matters:
 
 ## Product and UI Workstreams
 
-These items improve usability and product completeness, but they are not required for spec
-conformance.
-
-### 1. Angular Frontend Runtime Pages
-
-The Angular frontend is still effectively unimplemented.
-
-Current limitation:
-- `apps/web` contains entrypoints, styles, and feature placeholders, but not actual runtime pages
-- the only current operator UI is the server-rendered read-only dashboard served by Django
-- there is not yet a real frontend dashboard implemented in Angular
-
-Likely feature slices:
-- dashboard overview page
-- issue detail/runtime debugging page
-- runs/retry queue page
-- client consumption of existing `/api/v1/*` runtime endpoints
-
-Frontend dashboard scope:
-- build a real Angular dashboard page as the operator landing surface
-- show aggregate runtime counts, retry queue state, token/runtime totals, and workflow status
-- show active issue rows with links into issue-level runtime detail views
-- expose refresh controls backed by `/api/v1/refresh`
-- preserve the current backend-rendered dashboard as a minimal fallback or transitional surface until
-  the Angular dashboard is production-ready
-
-Suggested minimum frontend deliverable:
-- one Angular dashboard route consuming `/api/v1/state`
-- one issue detail route consuming `/api/v1/<issue_identifier>`
-- one retry/runs view derived from the existing runtime APIs
-- basic loading, empty, unavailable, and stale-state handling
-
-Why it matters:
-- This is the largest missing user-facing surface.
-- It should consume backend runtime APIs rather than duplicating orchestration logic.
+No additional product or UI workstreams remain after the 2026-03-10 Milestone 5 closeout.
 
 ## Relationship to SPEC_GAPS
 
@@ -159,8 +151,7 @@ This roadmap is broader:
 
 ## Suggested Priority Order
 
-1. Angular frontend runtime pages
-2. First-class tracker write APIs
+1. First-class tracker write APIs
 
 ## Next Planning Move
 

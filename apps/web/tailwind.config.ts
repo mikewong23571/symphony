@@ -10,7 +10,9 @@ export default {
         line: "var(--color-line)",
         fg: "var(--color-fg)",
         muted: "var(--color-muted)",
-        accent: "var(--color-accent)"
+        accent: "var(--color-accent)",
+        danger: "var(--color-danger)",
+        "danger-subtle": "var(--color-danger-subtle)"
       },
       fontFamily: {
         sans: ["var(--font-sans)"],
@@ -37,6 +39,7 @@ export default {
         "token-2": "var(--space-2)",
         "token-3": "var(--space-3)",
         "token-4": "var(--space-4)",
+        "token-5": "var(--space-5)",
         "token-6": "var(--space-6)",
         "token-8": "var(--space-8)"
       },

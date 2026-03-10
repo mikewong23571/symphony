@@ -1,6 +1,6 @@
 # SPEC Gaps
 
-Status: Re-audited through roadmap Milestones 1-4 on 2026-03-10
+Status: Re-audited through roadmap Milestone 5 on 2026-03-10
 
 Purpose: Record confirmed gaps between the current implementation and `docs/SPEC.md`.
 
