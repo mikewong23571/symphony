@@ -3,7 +3,6 @@ from __future__ import annotations
 import functools
 import json
 from html import escape
-from pathlib import Path
 from urllib.parse import quote
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -381,7 +380,7 @@ def _render_issue_link(entry: dict[str, object]) -> str:
 
 @functools.cache
 def _build_tracker_mutation_service() -> TrackerMutationService:
-    definition = load_workflow_definition(cwd=Path.cwd())
+    definition = load_workflow_definition()
     config = build_service_config(definition)
     validate_dispatch_config(config)
     return build_tracker_mutation_service(config)

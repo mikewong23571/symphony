@@ -1,0 +1,3 @@
+api: ./scripts/dev/api-server.sh
+runtime: ./scripts/dev/runtime.sh
+web: ./scripts/dev/web-server.sh

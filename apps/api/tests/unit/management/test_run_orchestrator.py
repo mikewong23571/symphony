@@ -337,6 +337,46 @@ def test_run_orchestrator_cli_port_overrides_workflow_port(
     assert calls == ["run_once", "wait_for_running_workers", "aclose"]
 
 
+def test_run_orchestrator_cli_host_overrides_default_bind_host(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
+    stdout = StringIO()
+    calls: list[str] = []
+    server_calls: list[tuple[str, int]] = []
+    fake_server = FakeHTTPServer(url="http://0.0.0.0:43123/")
+
+    monkeypatch.chdir(tmp_path)
+    install_fake_http_server(
+        monkeypatch,
+        calls=server_calls,
+        server=fake_server,
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "run_once",
+        fake_async_method(calls, "run_once"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
+
+    call_command("run_orchestrator", "--once", "--host", "0.0.0.0", stdout=stdout)
+
+    assert "Runtime dashboard listening on http://0.0.0.0:43123/" in stdout.getvalue()
+    assert server_calls == [("0.0.0.0", 43123)]
+    assert fake_server.close_calls == 1
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+
+
 def test_run_orchestrator_loads_workflow_observability_settings(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -404,6 +444,21 @@ def test_run_orchestrator_rejects_non_integer_port_option(
         match=r"Startup failed \(workflow_config_error\): port must be an integer\.",
     ):
         command.handle(port="abc")
+
+    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+
+
+def test_run_orchestrator_rejects_empty_cli_host(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    command = Command()
+    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
+
+    with pytest.raises(
+        CommandError,
+        match=r"Startup failed \(workflow_config_error\): host must not be empty\.",
+    ):
+        command.handle(host="   ")
 
     assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
 

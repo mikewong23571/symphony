@@ -1,7 +1,7 @@
 UV ?= uv
 PNPM ?= pnpm
 
-.PHONY: sync install-web dev-api dev-web lint lint-api lint-web typecheck typecheck-api typecheck-web format format-api format-web test test-api test-web precommit-install precommit-run
+.PHONY: sync install-web dev dev-api dev-web lint lint-api lint-web typecheck typecheck-api typecheck-web format format-api format-web test test-api test-web precommit-install precommit-run
 
 sync:
 	$(UV) sync
@@ -9,11 +9,14 @@ sync:
 install-web:
 	$(PNPM) install
 
+dev:
+	DEV_MODE=$(DEV_MODE) API_PORT=$(API_PORT) WEB_PORT=$(WEB_PORT) RUNTIME_PORT=$(RUNTIME_PORT) API_PROXY_TARGET=$(API_PROXY_TARGET) DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) WORKFLOW_TEMPLATE_PATH=$(WORKFLOW_TEMPLATE_PATH) RUNTIME_ROOT=$(RUNTIME_ROOT) SYMPHONY_WORKFLOW_PATH=$(SYMPHONY_WORKFLOW_PATH) SYMPHONY_RUNTIME_SNAPSHOT_PATH=$(SYMPHONY_RUNTIME_SNAPSHOT_PATH) SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH=$(SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH) SYMPHONY_RUNTIME_RECOVERY_PATH=$(SYMPHONY_RUNTIME_RECOVERY_PATH) ./scripts/dev/start.sh
+
 dev-api:
-	cd apps/api && ../../.venv/bin/python manage.py runserver
+	API_HOST=$(API_HOST) API_PORT=$(API_PORT) DJANGO_ALLOWED_HOSTS=$(DJANGO_ALLOWED_HOSTS) ./scripts/dev/api-server.sh
 
 dev-web:
-	$(PNPM) --dir apps/web start
+	WEB_HOST=$(WEB_HOST) WEB_PORT=$(WEB_PORT) API_PROXY_TARGET=$(API_PROXY_TARGET) ./scripts/dev/web-server.sh
 
 lint: lint-api lint-web
 

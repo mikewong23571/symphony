@@ -17,6 +17,7 @@ from .config import (
     validate_dispatch_config,
 )
 from .loader import (
+    WORKFLOW_PATH_ENV_VAR,
     MissingWorkflowFileError,
     WorkflowDefinition,
     WorkflowError,
@@ -35,6 +36,7 @@ __all__ = [
     "MissingTrackerProjectSlugError",
     "ServiceConfig",
     "UnsupportedTrackerKindError",
+    "WORKFLOW_PATH_ENV_VAR",
     "WorkflowConfigError",
     "WorkflowDefinition",
     "WorkflowError",

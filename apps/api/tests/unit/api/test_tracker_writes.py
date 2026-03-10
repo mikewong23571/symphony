@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 from django.test import Client
+from symphony.api.views import _build_tracker_mutation_service
 from symphony.tracker.write_contract import (
     TrackerAttachment,
     TrackerComment,
@@ -318,3 +320,29 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
         }
     }
     assert backend.attachment_calls == 0
+
+
+def test_build_tracker_mutation_service_uses_env_workflow_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = tmp_path / "runtime" / "WORKFLOW.md"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text(
+        """---
+tracker:
+  kind: linear
+  api_key: env-linear-token
+  project_slug: runtime-project
+---
+# Prompt body
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
+    _build_tracker_mutation_service.cache_clear()
+
+    service = _build_tracker_mutation_service()
+
+    assert service.project_slug == "runtime-project"
+    _build_tracker_mutation_service.cache_clear()

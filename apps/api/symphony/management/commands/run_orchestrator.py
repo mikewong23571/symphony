@@ -41,7 +41,11 @@ class Command(BaseCommand):
         parser.add_argument(
             "--port",
             type=int,
-            help="Optional loopback HTTP port for the observability/control extension.",
+            help="Optional HTTP port for the observability/control extension.",
+        )
+        parser.add_argument(
+            "--host",
+            help="Optional HTTP bind host for the observability/control extension.",
         )
 
     def handle(self, *args: object, **options: Any) -> str | None:
@@ -59,6 +63,7 @@ class Command(BaseCommand):
             raise CommandError("Startup failed (workflow_error): workflow path must be a string.")
         run_once = bool(options.get("once"))
         cli_port = options.get("port")
+        cli_host = options.get("host")
         if cli_port is not None and not isinstance(cli_port, int):
             log_event(
                 logger,
@@ -84,6 +89,7 @@ class Command(BaseCommand):
                 "Startup failed (workflow_config_error): "
                 "port must be an integer greater than or equal to 0."
             )
+        bind_host = self._resolve_http_host(cli_host)
 
         workflow_runtime = WorkflowRuntime(workflow_path, cwd=Path.cwd(), env=os.environ)
         try:
@@ -109,7 +115,7 @@ class Command(BaseCommand):
             snapshot_max_age_seconds=config.observability.snapshot_max_age_seconds,
         )
         http_port = cli_port if cli_port is not None else config.server.port
-        http_server = self._start_http_server(port=http_port)
+        http_server = self._start_http_server(host=bind_host, port=http_port)
 
         async def run() -> None:
             orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
@@ -137,26 +143,42 @@ class Command(BaseCommand):
             self.stdout.write("Orchestrator stopped.")
         return None
 
-    def _start_http_server(self, *, port: int | None) -> "RuntimeHTTPServer | None":
+    def _resolve_http_host(self, cli_host: str | None) -> str:
+        if cli_host is None:
+            return DEFAULT_HTTP_BIND_HOST
+        host = cli_host.strip()
+        if not host:
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_validation_failed",
+                fields={
+                    "error_code": "workflow_config_error",
+                    "message": "host must not be empty.",
+                },
+            )
+            raise CommandError("Startup failed (workflow_config_error): host must not be empty.")
+        return host
+
+    def _start_http_server(self, *, host: str, port: int | None) -> "RuntimeHTTPServer | None":
         if port is None:
             return None
         try:
-            http_server = start_runtime_http_server(host=DEFAULT_HTTP_BIND_HOST, port=port)
+            http_server = start_runtime_http_server(host=host, port=port)
         except OSError as exc:
             log_event(
                 logger,
                 logging.WARNING,
                 "http_server_bind_failed",
                 fields={
-                    "host": DEFAULT_HTTP_BIND_HOST,
+                    "host": host,
                     "port": port,
                     "error_code": exc.__class__.__name__,
                     "message": str(exc) or "could not bind HTTP server",
                 },
             )
             raise CommandError(
-                f"Startup failed (http_server_error): could not bind HTTP server to "
-                f"{DEFAULT_HTTP_BIND_HOST}:{port}."
+                f"Startup failed (http_server_error): could not bind HTTP server to {host}:{port}."
             ) from exc
         self.stdout.write(f"Runtime dashboard listening on {http_server.url}")
         return http_server

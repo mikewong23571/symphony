@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from symphony.workflow import (
+    WORKFLOW_PATH_ENV_VAR,
     MissingWorkflowFileError,
     WorkflowFrontMatterNotAMapError,
     WorkflowParseError,
@@ -15,6 +16,24 @@ from symphony.workflow import (
 
 def test_resolve_workflow_path_defaults_to_workflow_md_in_cwd(tmp_path: Path) -> None:
     assert resolve_workflow_path(cwd=tmp_path) == tmp_path / "WORKFLOW.md"
+
+
+def test_resolve_workflow_path_uses_env_var_when_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(WORKFLOW_PATH_ENV_VAR, "configs/runtime-workflow.md")
+
+    assert resolve_workflow_path(cwd=tmp_path) == tmp_path / "configs/runtime-workflow.md"
+
+
+def test_resolve_workflow_path_explicit_argument_overrides_env_var(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(WORKFLOW_PATH_ENV_VAR, "configs/runtime-workflow.md")
+
+    assert resolve_workflow_path("WORKFLOW.md", cwd=tmp_path) == tmp_path / "WORKFLOW.md"
 
 
 def test_resolve_workflow_path_uses_explicit_relative_path(tmp_path: Path) -> None:
@@ -37,6 +56,21 @@ def test_load_workflow_definition_reads_from_disk(tmp_path: Path) -> None:
 
     assert definition.config == {}
     assert definition.prompt_template == "# Prompt body"
+
+
+def test_load_workflow_definition_uses_env_workflow_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = tmp_path / "configs" / "runtime-workflow.md"
+    workflow_path.parent.mkdir(parents=True)
+    workflow_path.write_text("# Runtime prompt body\n", encoding="utf-8")
+    monkeypatch.setenv(WORKFLOW_PATH_ENV_VAR, "configs/runtime-workflow.md")
+
+    definition = load_workflow_definition(cwd=tmp_path)
+
+    assert definition.config == {}
+    assert definition.prompt_template == "# Runtime prompt body"
 
 
 def test_load_workflow_definition_raises_typed_error_for_missing_file(tmp_path: Path) -> None:

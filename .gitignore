@@ -19,6 +19,8 @@ node_modules/
 dist/
 .angular/
 coverage/
+.tmp/
+.runtime/
 
 # Env
 .env

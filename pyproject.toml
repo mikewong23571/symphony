@@ -1,9 +1,14 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "symphony"
 version = "0.1.0"
 description = "Coding-agent orchestration service"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [{ name = "Symphony" }]
 dependencies = [
   "django>=5.2,<5.3",
   "djangorestframework>=3.15,<3.16",
@@ -11,6 +16,9 @@ dependencies = [
   "jinja2>=3.1,<3.2",
   "pyyaml>=6.0,<6.1",
 ]
+
+[project.scripts]
+symphony-orchestrator = "symphony.cli:run_orchestrator_main"
 
 [dependency-groups]
 dev = [
@@ -23,7 +31,14 @@ dev = [
 ]
 
 [tool.uv]
-package = false
+package = true
+
+[tool.setuptools]
+package-dir = { "" = "apps/api" }
+
+[tool.setuptools.packages.find]
+where = ["apps/api"]
+include = ["config*", "symphony*"]
 
 [tool.ruff]
 line-length = 100

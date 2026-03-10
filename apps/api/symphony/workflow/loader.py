@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+WORKFLOW_PATH_ENV_VAR = "SYMPHONY_WORKFLOW_PATH"
 
 
 class WorkflowError(Exception):
@@ -39,7 +42,11 @@ def resolve_workflow_path(
     cwd: Path | None = None,
 ) -> Path:
     base_dir = cwd or Path.cwd()
-    candidate = Path(workflow_path) if workflow_path is not None else Path("WORKFLOW.md")
+    if workflow_path is None:
+        configured_path = os.environ.get(WORKFLOW_PATH_ENV_VAR, "").strip()
+        candidate = Path(configured_path) if configured_path else Path("WORKFLOW.md")
+    else:
+        candidate = Path(workflow_path)
     if not candidate.is_absolute():
         candidate = base_dir / candidate
     return candidate
