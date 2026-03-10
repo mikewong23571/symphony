@@ -33,7 +33,7 @@ export function presentDashboardSnapshot(
     snapshotStatus,
     generatedAt: formatTimestamp(snapshot.generated_at),
     expiresAt: formatTimestamp(snapshot.expires_at),
-    statCards: buildDashboardStatCards(snapshot, snapshotStatus),
+    statCards: buildDashboardStatCards(snapshot),
     activeIssues: snapshot.running.map(presentRunningRow),
     retryQueue: snapshot.retrying.map(presentRetryRow),
     rateLimits: presentRateLimits(snapshot.rate_limits),
@@ -117,8 +117,7 @@ export function presentRefreshReceipt(
 }
 
 function buildDashboardStatCards(
-  snapshot: RuntimeStateApiResponse,
-  snapshotStatus: DashboardViewModel["snapshotStatus"]
+  snapshot: RuntimeStateApiResponse
 ): RuntimeStatCardViewModel[] {
   return [
     {
@@ -146,11 +145,6 @@ function buildDashboardStatCards(
       label: "Runtime",
       value: formatDurationSeconds(snapshot.codex_totals.seconds_running),
       detail: `Snapshot generated ${formatTimestamp(snapshot.generated_at)}`
-    },
-    {
-      label: "Workflow status",
-      value: snapshotStatus.label,
-      detail: snapshotStatus.detail
     }
   ];
 }
@@ -158,20 +152,12 @@ function buildDashboardStatCards(
 function presentRateLimits(
   rateLimits: RuntimeStateApiResponse["rate_limits"]
 ): RuntimeStatCardViewModel[] {
-  if (!rateLimits) {
-    return [
-      {
-        label: "Rate limits",
-        value: "Unavailable",
-        detail: "The backend snapshot did not include rate-limit telemetry."
-      }
-    ];
-  }
+  if (!rateLimits) return [];
 
   return Object.entries(rateLimits).map(([key, value]) => ({
     label: key.replaceAll("_", " "),
     value: typeof value === "number" ? formatInteger(value) : String(value),
-    detail: "Reported directly by the backend snapshot."
+    detail: ""
   }));
 }
 

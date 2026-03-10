@@ -15,6 +15,7 @@ import {
   DashboardViewModel,
   RefreshReceiptViewModel,
   RuntimeUiError,
+  RuntimeStatCardViewModel,
   SnapshotStatusViewModel
 } from "../../shared/lib/runtime-types";
 import { EmptyStateComponent } from "../../shared/ui/empty-state.component";
@@ -35,290 +36,265 @@ type RefreshState =
   standalone: true,
   imports: [CommonModule, RouterLink, EmptyStateComponent],
   template: `
-    <div class="space-y-token-6">
-      <section
-        class="grid gap-token-4 lg:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]"
-      >
-        <article
-          class="rounded-panel border border-line bg-surface p-token-6 shadow-panel"
-        >
-          <p class="text-xs uppercase tracking-ui text-accent">Dashboard</p>
-          <h2 class="mt-token-2 text-3xl font-semibold">
-            Live orchestration snapshot
-          </h2>
-          <p class="mt-token-3 max-w-2xl text-body text-muted">
-            Aggregate counts, token totals, and active issue rows come straight
-            from the backend runtime snapshot. Refresh asks Django to enqueue a
-            reconcile cycle instead of reimplementing orchestration in the
-            browser.
-          </p>
-        </article>
-
-        <aside
-          class="rounded-panel border border-line bg-surface p-token-6 shadow-panel"
-        >
-          <div class="flex items-center justify-between gap-token-3">
-            <div>
-              <p class="text-xs uppercase tracking-ui text-muted">
-                Refresh control
-              </p>
-              <p class="mt-token-2 text-lg font-semibold text-fg">
-                Trigger a backend refresh
-              </p>
-            </div>
-            <button
-              type="button"
-              (click)="requestRefresh()"
-              [disabled]="refreshState().kind === 'pending'"
-              class="rounded-full bg-accent px-token-4 py-token-2 text-sm font-medium text-surface transition-opacity duration-base ease-standard disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {{
-                refreshState().kind === "pending"
-                  ? "Refreshing..."
-                  : "Refresh now"
-              }}
-            </button>
-          </div>
-
-          @if (refreshReceipt(); as receipt) {
-            <div
-              class="mt-token-4 rounded-panel border border-line bg-bg/80 p-token-4 text-sm"
-            >
-              <p class="font-medium text-fg">{{ receipt.queuedLabel }}</p>
-              <p class="mt-token-2 text-muted">
-                {{ receipt.operationsLabel }} at {{ receipt.requestedAt }}
-              </p>
-            </div>
-          }
-
-          @if (refreshError(); as refreshError) {
-            <div
-              class="mt-token-4 rounded-panel border border-accent bg-bg/80 p-token-4 text-sm"
-            >
-              <p class="font-medium text-fg">Refresh failed</p>
-              <p class="mt-token-2 text-muted">{{ refreshError.message }}</p>
-            </div>
-          }
-        </aside>
-      </section>
-
+    <div class="space-y-token-5">
       @if (state().kind === "loading") {
-        <section
-          class="rounded-panel border border-dashed border-line bg-surface/80 p-token-6 shadow-panel"
-        >
-          <p class="text-sm uppercase tracking-ui text-muted">Loading</p>
-          <h3 class="mt-token-2 text-2xl font-semibold">
-            Waiting for /api/v1/state
-          </h3>
-          <p class="mt-token-3 text-muted">
-            The dashboard will populate once the current runtime snapshot is
-            available.
-          </p>
-        </section>
+        <p class="py-token-8 text-center text-sm text-muted">
+          Loading snapshot...
+        </p>
       } @else {
         @if (dashboardError(); as error) {
           <section
-            class="rounded-panel border border-line border-l-4 border-l-danger bg-danger-subtle p-token-6 shadow-panel"
+            class="overflow-hidden rounded-panel border border-line border-l-4 border-l-danger bg-danger-subtle shadow-panel"
           >
-            <p
-              class="text-sm uppercase tracking-ui"
-              [class]="errorToneClass(error)"
-            >
-              {{ errorEyebrow(error) }}
-            </p>
-            <h3 class="mt-token-2 text-2xl font-semibold">
-              {{ errorTitle(error) }}
-            </h3>
-            <p class="mt-token-3 max-w-2xl text-muted">{{ error.message }}</p>
-            <button
-              type="button"
-              (click)="load()"
-              class="mt-token-4 rounded-full border border-line px-token-4 py-token-2 text-sm transition-colors duration-base ease-standard hover:border-accent hover:text-fg"
-            >
-              Retry snapshot load
-            </button>
+            <div class="p-token-6">
+              <p
+                class="text-sm uppercase tracking-ui"
+                [class]="errorToneClass(error)"
+              >
+                {{ errorEyebrow(error) }}
+              </p>
+              <h3 class="mt-token-2 text-2xl font-semibold">
+                {{ errorTitle(error) }}
+              </h3>
+              <p class="mt-token-3 max-w-2xl text-muted">
+                {{ error.message }}
+              </p>
+              <button
+                type="button"
+                (click)="load()"
+                class="mt-token-4 rounded border border-line px-token-3 py-token-1 text-sm text-muted transition-colors duration-fast ease-standard hover:border-accent hover:text-fg"
+              >
+                Retry
+              </button>
+            </div>
           </section>
         } @else {
           @if (dashboardData(); as data) {
-            <section class="grid gap-token-4 md:grid-cols-2 xl:grid-cols-4">
-              @for (card of data.statCards; track card.label) {
-                <article
-                  class="rounded-panel border border-line bg-surface p-token-5 shadow-panel"
-                >
-                  <p class="text-xs uppercase tracking-ui text-muted">
-                    {{ card.label }}
-                  </p>
-                  <p class="mt-token-3 text-3xl font-semibold">
-                    {{ card.value }}
-                  </p>
-                  <p class="mt-token-2 text-sm text-muted">{{ card.detail }}</p>
-                </article>
-              }
-            </section>
-
-            <section
-              class="grid gap-token-4 lg:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]"
+            <!-- Snapshot panel -->
+            <div
+              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
             >
-              <article
-                class="rounded-panel border border-line bg-surface p-token-6 shadow-panel"
+              <div
+                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
               >
-                <div
-                  class="flex flex-col gap-token-2 border-b border-line pb-token-4 md:flex-row md:items-end md:justify-between"
-                >
-                  <div>
-                    <p class="text-xs uppercase tracking-ui text-muted">
-                      Active issues
-                    </p>
-                    <h3 class="mt-token-2 text-2xl font-semibold">
-                      Dispatches in flight
-                    </h3>
-                  </div>
-                  <a
-                    routerLink="/runs"
-                    class="text-sm text-muted transition-colors duration-base ease-standard hover:text-accent"
+                <p class="text-xs uppercase tracking-ui text-muted">Snapshot</p>
+                <div class="flex items-center gap-token-3">
+                  @if (refreshReceipt(); as receipt) {
+                    <span class="text-xs text-muted">{{
+                      receipt.queuedLabel
+                    }}</span>
+                  }
+                  @if (refreshError(); as err) {
+                    <span class="text-xs text-danger"
+                      >Refresh failed: {{ err.message }}</span
+                    >
+                  }
+                  <button
+                    type="button"
+                    (click)="requestRefresh()"
+                    [disabled]="refreshState().kind === 'pending'"
+                    class="rounded border border-line px-token-3 py-token-1 text-xs text-muted transition-colors duration-fast ease-standard hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Open runs view
-                  </a>
+                    {{
+                      refreshState().kind === "pending"
+                        ? "Refreshing…"
+                        : "Refresh"
+                    }}
+                  </button>
                 </div>
+              </div>
 
+              <div
+                class="flex flex-wrap divide-x divide-line border-b border-line"
+              >
+                @for (card of data.statCards; track card.label) {
+                  <div class="min-w-[7rem] flex-1 px-token-5 py-token-4">
+                    <p
+                      class="text-2xl font-semibold tabular-nums"
+                      [class]="statToneClass(card)"
+                    >
+                      {{ card.value }}
+                    </p>
+                    <p class="mt-token-1 text-xs text-muted">
+                      {{ card.label }}
+                    </p>
+                  </div>
+                }
+              </div>
+
+              <div
+                class="flex flex-wrap items-center gap-x-token-4 gap-y-token-1 px-token-5 py-token-3"
+              >
+                <span
+                  class="text-sm font-medium"
+                  [class]="snapshotToneClass(data.snapshotStatus)"
+                  >{{ data.snapshotStatus.label }}</span
+                >
+                <span class="text-xs text-muted">{{
+                  data.snapshotStatus.detail
+                }}</span>
+              </div>
+            </div>
+
+            <!-- Active issues panel -->
+            <div
+              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
+            >
+              <div
+                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
+              >
+                <p class="text-xs uppercase tracking-ui text-muted">
+                  Active issues
+                </p>
+                @if (data.activeIssues.length > 0) {
+                  <span class="text-xs font-medium text-positive">
+                    {{ data.activeIssues.length }} running
+                  </span>
+                }
+              </div>
+
+              <div class="p-token-5">
                 @if (data.activeIssues.length === 0) {
                   <app-empty-state
-                    title="No active issue runs"
-                    description="The backend snapshot currently reports zero running issues. Retry entries still appear in the adjacent queue panel."
+                    title="No active issues"
+                    description="No issues are currently running."
                   />
                 } @else {
-                  <div class="mt-token-5 space-y-token-4">
+                  <div class="space-y-token-3">
                     @for (issue of data.activeIssues; track issue.identifier) {
                       <a
                         [routerLink]="['/issues', issue.identifier]"
                         class="block rounded-panel border border-line bg-bg/70 p-token-4 transition-transform duration-base ease-standard hover:-translate-y-0.5 hover:border-accent"
                       >
-                        <div
-                          class="flex flex-col gap-token-3 xl:flex-row xl:items-start xl:justify-between"
-                        >
-                          <div>
-                            <div
-                              class="flex flex-wrap items-center gap-token-2"
-                            >
-                              <h4 class="text-xl font-semibold">
-                                {{ issue.identifier }}
-                              </h4>
-                              <span
-                                class="rounded-full border border-line px-token-3 py-token-1 text-xs uppercase tracking-ui text-muted"
-                              >
-                                {{ issue.state }}
-                              </span>
-                              <span
-                                class="rounded-full bg-accent px-token-3 py-token-1 text-xs uppercase tracking-ui text-surface"
-                              >
-                                {{ issue.attemptLabel }}
-                              </span>
-                            </div>
-                            <p class="mt-token-2 text-sm text-muted">
-                              {{ issue.lastEvent }} • {{ issue.lastMessage }}
-                            </p>
-                          </div>
-                          <div
-                            class="grid gap-token-3 text-sm text-muted md:grid-cols-2"
+                        <div class="flex flex-wrap items-center gap-token-2">
+                          <span class="text-base font-semibold">{{
+                            issue.identifier
+                          }}</span>
+                          <span
+                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui"
+                            [class]="stateBadgeClass(issue.state)"
+                            >{{ issue.state }}</span
                           >
-                            <p>
-                              <span class="font-medium text-fg">Session:</span>
-                              {{ issue.session }}
-                            </p>
-                            <p>
-                              <span class="font-medium text-fg">Started:</span>
-                              {{ issue.startedAt }}
-                            </p>
-                            <p>
-                              <span class="font-medium text-fg">Updated:</span>
-                              {{ issue.updatedAt }}
-                            </p>
-                            <p>
-                              <span class="font-medium text-fg">Tokens:</span>
-                              {{ issue.tokenSummary }}
-                            </p>
-                          </div>
+                          <span
+                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui"
+                            [class]="attemptBadgeClass(issue.attemptLabel)"
+                            >{{ issue.attemptLabel }}</span
+                          >
                         </div>
-                        <p class="mt-token-3 text-sm text-muted">
-                          <span class="font-medium text-fg">Workspace:</span>
-                          {{ issue.workspacePath }}
+                        <p class="mt-token-2 text-sm text-muted">
+                          {{ issue.lastEvent }} · {{ issue.lastMessage }}
                         </p>
+                        <div
+                          class="mt-token-3 grid gap-x-token-6 gap-y-token-1 text-sm text-muted sm:grid-cols-2"
+                        >
+                          <p>
+                            <span class="font-medium text-fg">Session</span>
+                            {{ issue.session }}
+                          </p>
+                          <p>
+                            <span class="font-medium text-fg">Started</span>
+                            {{ issue.startedAt }}
+                          </p>
+                          <p>
+                            <span class="font-medium text-fg">Tokens</span>
+                            {{ issue.tokenSummary }}
+                          </p>
+                          <p>
+                            <span class="font-medium text-fg">Workspace</span>
+                            {{ issue.workspacePath }}
+                          </p>
+                        </div>
                       </a>
                     }
                   </div>
                 }
-              </article>
+              </div>
+            </div>
 
-              <article
-                class="rounded-panel border border-line bg-surface p-token-6 shadow-panel"
+            <!-- Retry queue panel -->
+            <div
+              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
+            >
+              <div
+                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
               >
-                <div class="border-b border-line pb-token-4">
-                  <p class="text-xs uppercase tracking-ui text-muted">
-                    Snapshot health
-                  </p>
-                  <h3
-                    class="mt-token-2 text-2xl font-semibold"
-                    [class]="snapshotToneClass(data.snapshotStatus)"
-                  >
-                    {{ data.snapshotStatus.label }}
-                  </h3>
-                  <p class="mt-token-2 text-sm text-muted">
-                    {{ data.snapshotStatus.detail }}
-                  </p>
-                </div>
+                <p class="text-xs uppercase tracking-ui text-muted">
+                  Retry queue
+                </p>
+                @if (data.retryQueue.length > 0) {
+                  <span class="text-xs font-medium text-warning">
+                    {{ data.retryQueue.length }} queued
+                  </span>
+                }
+              </div>
 
-                <dl class="mt-token-5 space-y-token-3 text-sm">
-                  <div class="flex items-start justify-between gap-token-4">
-                    <dt class="text-muted">Generated</dt>
-                    <dd class="text-right font-medium text-fg">
-                      {{ data.generatedAt }}
-                    </dd>
+              <div class="p-token-5">
+                @if (data.retryQueue.length === 0) {
+                  <app-empty-state
+                    title="No retries waiting"
+                    description="When a retry is scheduled, it will appear here."
+                  />
+                } @else {
+                  <div class="space-y-token-3">
+                    @for (retry of data.retryQueue; track retry.identifier) {
+                      <a
+                        [routerLink]="['/issues', retry.identifier]"
+                        class="block rounded-panel border border-line bg-bg/70 p-token-4 transition-transform duration-base ease-standard hover:-translate-y-0.5 hover:border-accent"
+                      >
+                        <div class="flex flex-wrap items-center gap-token-2">
+                          <span class="text-base font-semibold">{{
+                            retry.identifier
+                          }}</span>
+                          <span
+                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui bg-warning-subtle text-warning"
+                            >{{ retry.attemptLabel }}</span
+                          >
+                        </div>
+                        <div
+                          class="mt-token-2 grid gap-x-token-6 gap-y-token-1 text-sm text-muted sm:grid-cols-2"
+                        >
+                          <p>
+                            <span class="font-medium text-fg">Due</span>
+                            {{ retry.dueAt }}
+                          </p>
+                          <p>
+                            <span class="font-medium text-fg">Error</span>
+                            {{ retry.error }}
+                          </p>
+                          <p class="sm:col-span-2">
+                            <span class="font-medium text-fg">Workspace</span>
+                            {{ retry.workspacePath }}
+                          </p>
+                        </div>
+                      </a>
+                    }
                   </div>
-                  <div class="flex items-start justify-between gap-token-4">
-                    <dt class="text-muted">Expires</dt>
-                    <dd class="text-right font-medium text-fg">
-                      {{ data.expiresAt }}
-                    </dd>
-                  </div>
-                </dl>
-              </article>
-            </section>
+                }
+              </div>
+            </div>
 
-            <section class="grid gap-token-4 sm:grid-cols-2 lg:grid-cols-3">
-              @for (entry of data.rateLimits; track entry.label) {
+            <!-- Rate limits -->
+            @if (data.rateLimits.length > 0) {
+              <section>
+                <p class="text-xs uppercase tracking-ui text-muted">
+                  Rate limits
+                </p>
                 <div
-                  class="rounded-panel border border-line bg-surface p-token-4 shadow-panel"
+                  class="mt-token-3 grid gap-token-4 sm:grid-cols-2 lg:grid-cols-3"
                 >
-                  <p class="text-xs uppercase tracking-ui text-muted">
-                    Rate limits
-                  </p>
-                  <p class="mt-token-2 font-medium capitalize text-fg">
-                    {{ entry.label }}
-                  </p>
-                  <p class="mt-token-2 text-lg font-semibold">
-                    {{ entry.value }}
-                  </p>
-                  <p class="mt-token-1 text-sm text-muted">
-                    {{ entry.detail }}
-                  </p>
+                  @for (entry of data.rateLimits; track entry.label) {
+                    <div
+                      class="rounded-panel border border-line bg-surface p-token-4 shadow-panel"
+                    >
+                      <p class="text-xs capitalize text-muted">
+                        {{ entry.label }}
+                      </p>
+                      <p class="mt-token-2 text-lg font-semibold text-fg">
+                        {{ entry.value }}
+                      </p>
+                    </div>
+                  }
                 </div>
-              }
-            </section>
-
-            @if (!data.hasActivity) {
-              <section
-                class="rounded-panel border border-dashed border-line bg-surface/80 p-token-6 shadow-panel"
-              >
-                <p class="text-sm uppercase tracking-ui text-muted">
-                  Empty snapshot
-                </p>
-                <h3 class="mt-token-2 text-2xl font-semibold">
-                  Nothing is running right now
-                </h3>
-                <p class="mt-token-3 max-w-2xl text-muted">
-                  This is a valid empty state: no active runs and no queued
-                  retries were present when the snapshot was generated.
-                </p>
               </section>
             }
           }
@@ -382,6 +358,23 @@ export class DashboardPageComponent {
       });
   }
 
+  statToneClass(card: RuntimeStatCardViewModel): string {
+    if (card.label === "Running" && card.value !== "0") return "text-positive";
+    if (card.label === "Retrying" && card.value !== "0") return "text-warning";
+    return "text-fg";
+  }
+
+  stateBadgeClass(state: string): string {
+    if (state === "running") return "bg-positive-subtle text-positive";
+    if (state === "retrying") return "bg-warning-subtle text-warning";
+    return "border border-line text-muted";
+  }
+
+  attemptBadgeClass(label: string): string {
+    if (label.startsWith("Retry")) return "bg-warning-subtle text-warning";
+    return "bg-accent-subtle text-accent";
+  }
+
   errorEyebrow(error: RuntimeUiError): string {
     switch (error.kind) {
       case "stale":
@@ -410,13 +403,13 @@ export class DashboardPageComponent {
 
   errorToneClass(error: RuntimeUiError): string {
     if (error.kind === "stale" || error.kind === "timeout")
-      return "text-accent";
+      return "text-warning";
     return "text-danger";
   }
 
   snapshotToneClass(status: SnapshotStatusViewModel): string {
-    if (status.tone === "warning") return "text-accent";
+    if (status.tone === "warning") return "text-warning";
     if (status.tone === "danger") return "text-danger";
-    return "text-fg";
+    return "text-muted";
   }
 }

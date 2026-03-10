@@ -12,7 +12,12 @@ export default {
         muted: "var(--color-muted)",
         accent: "var(--color-accent)",
         danger: "var(--color-danger)",
-        "danger-subtle": "var(--color-danger-subtle)"
+        "danger-subtle": "var(--color-danger-subtle)",
+        positive: "var(--color-positive)",
+        "positive-subtle": "var(--color-positive-subtle)",
+        warning: "var(--color-warning)",
+        "warning-subtle": "var(--color-warning-subtle)",
+        "accent-subtle": "var(--color-accent-subtle)"
       },
       fontFamily: {
         sans: ["var(--font-sans)"],

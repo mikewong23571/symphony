@@ -7,6 +7,11 @@
   --color-accent: #b5532d;
   --color-danger: #a83222;
   --color-danger-subtle: rgba(168, 50, 34, 0.06);
+  --color-positive: #3d6b4f;
+  --color-positive-subtle: rgba(61, 107, 79, 0.1);
+  --color-warning: #8a6520;
+  --color-warning-subtle: rgba(138, 101, 32, 0.1);
+  --color-accent-subtle: rgba(181, 83, 45, 0.1);
 
   --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", "SFMono-Regular", monospace;

@@ -11,62 +11,39 @@ import { RouterLink, RouterLinkActive, RouterOutlet } from "@angular/router";
       class="min-h-screen bg-gradient-to-b from-surface via-bg to-bg text-fg"
     >
       <div
-        class="mx-auto flex min-h-screen max-w-7xl flex-col px-token-4 py-token-6 lg:px-token-6"
+        class="mx-auto flex min-h-screen max-w-7xl flex-col gap-token-8 px-token-4 py-token-6 lg:px-token-6"
       >
         <header
           class="rounded-panel border border-line bg-surface/95 p-token-6 shadow-panel backdrop-blur"
         >
-          <div
-            class="flex flex-col gap-token-4 lg:flex-row lg:items-end lg:justify-between"
-          >
-            <div class="max-w-3xl">
-              <p class="text-xs uppercase tracking-ui text-accent">
-                Symphony Runtime
-              </p>
-              <h1 class="mt-token-2 text-display font-semibold">
-                Operator surface for live orchestration state
-              </h1>
-              <p class="mt-token-3 max-w-2xl text-body text-muted">
-                Angular stays a consumer of the backend snapshot APIs. The
-                Django HTML dashboard remains available as a fallback while this
-                UI matures.
-              </p>
-            </div>
-            <div
-              class="rounded-panel border border-line bg-bg/75 px-token-4 py-token-3 text-sm text-muted"
-            >
-              <p class="font-medium text-fg">Data source</p>
-              <p>/api/v1/state, /api/v1/refresh, /api/v1/:issue_identifier</p>
-            </div>
-          </div>
-          <nav class="mt-token-6 flex flex-wrap gap-token-2 text-sm">
+          <p class="text-xs uppercase tracking-ui text-accent">
+            Symphony Runtime
+          </p>
+          <h1 class="mt-token-2 text-display font-semibold">Runtime Monitor</h1>
+        </header>
+
+        <div class="flex flex-1 flex-col">
+          <nav class="flex gap-token-6 border-b border-line">
             <a
               routerLink="/"
-              routerLinkActive="border-accent bg-accent text-surface"
+              routerLinkActive="border-accent text-fg"
               [routerLinkActiveOptions]="{ exact: true }"
-              class="rounded-full border border-line px-token-4 py-token-2 transition-colors duration-base ease-standard"
+              class="-mb-px border-b-2 border-transparent pb-token-3 text-sm text-muted transition-colors duration-fast ease-standard hover:text-fg"
             >
               Dashboard
             </a>
             <a
-              routerLink="/runs"
-              routerLinkActive="border-accent bg-accent text-surface"
-              class="rounded-full border border-line px-token-4 py-token-2 transition-colors duration-base ease-standard"
-            >
-              Runs
-            </a>
-            <a
               [href]="fallbackUrl"
-              class="rounded-full border border-line px-token-4 py-token-2 text-muted transition-colors duration-base ease-standard hover:border-accent hover:text-fg"
+              class="-mb-px border-b-2 border-transparent pb-token-3 text-sm text-muted transition-colors duration-fast ease-standard hover:text-fg"
             >
               Django fallback
             </a>
           </nav>
-        </header>
 
-        <section class="flex-1 py-token-6">
-          <router-outlet />
-        </section>
+          <div class="w-full max-w-4xl pt-token-6">
+            <router-outlet />
+          </div>
+        </div>
       </div>
     </main>
   `,
