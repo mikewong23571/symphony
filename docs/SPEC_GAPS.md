@@ -1,6 +1,6 @@
 # SPEC Gaps
 
-Status: Re-audited through roadmap Milestone 5 on 2026-03-10
+Status: Re-audited through roadmap Milestone 6 on 2026-03-10
 
 Purpose: Record confirmed gaps between the current implementation and `docs/SPEC.md`.
 
@@ -10,6 +10,8 @@ Scope notes:
   observability, workspace-prep, prompt-taxonomy, recovery, and workflow-configurable
   observability items are already implemented.
 - No currently confirmed core conformance gaps remain after that re-audit.
+- No currently confirmed recommended extension gaps remain after the Milestone 6 tracker-write
+  implementation pass.
 - `docs/SPEC.md` remains the normative behavior contract.
 
 ## Core Conformance Gaps
@@ -18,8 +20,5 @@ No currently confirmed core conformance gaps remain after the 2026-03-10 re-audi
 
 ## Recommended Extension Gaps
 
-- [ ] Unfixed | Low | Symphony does not yet expose a first-class tracker write surface.
-  Spec references: `docs/SPEC.md` Section 18.2.
-  Current gap: tracker comments, state transitions, and PR metadata attachment still depend on
-  agent tools rather than a backend-owned service or API with normalized mutation semantics.
-  Evidence: `apps/api/symphony/tracker/linear_client.py`, `apps/api/symphony/orchestrator/core.py`.
+No currently confirmed recommended extension gaps remain after the 2026-03-10 Milestone 6
+closeout.

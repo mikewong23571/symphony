@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import functools
+import json
 from html import escape
+from pathlib import Path
 from urllib.parse import quote
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
@@ -13,11 +16,31 @@ from symphony.observability.runtime import (
     get_runtime_snapshot,
     queue_runtime_refresh_request,
 )
+from symphony.tracker.write_contract import (
+    TrackerCommentRequest,
+    TrackerIssueNotFoundError,
+    TrackerMutationError,
+    TrackerPullRequestRequest,
+    TrackerTransitionRequest,
+    TrackerValidationError,
+)
+from symphony.tracker.write_service import (
+    TrackerMutationService,
+    build_tracker_mutation_service,
+)
+from symphony.workflow import (
+    WorkflowConfigError,
+    WorkflowError,
+    build_service_config,
+    load_workflow_definition,
+    validate_dispatch_config,
+)
 
 ALLOWED_DASHBOARD_METHODS = "GET, HEAD"
 ALLOWED_STATE_METHODS = "GET, HEAD"
 ALLOWED_ISSUE_METHODS = "GET, HEAD"
 ALLOWED_REFRESH_METHODS = "POST"
+ALLOWED_TRACKER_MUTATION_METHODS = "POST"
 
 
 def healthcheck(_request: HttpRequest) -> JsonResponse:
@@ -149,6 +172,152 @@ def runtime_refresh(request: HttpRequest) -> JsonResponse:
     return JsonResponse(refresh_request, status=202)
 
 
+@csrf_exempt
+def tracker_comment(request: HttpRequest, issue_identifier: str) -> JsonResponse:
+    if request.method != "POST":
+        response = _error_response(
+            code="method_not_allowed",
+            message=(
+                f"Method {request.method!r} is not allowed for "
+                f"/api/v1/tracker/issues/{issue_identifier}/comments."
+            ),
+            status=405,
+        )
+        response["Allow"] = ALLOWED_TRACKER_MUTATION_METHODS
+        return response
+
+    try:
+        payload = _parse_json_body(request)
+        service = _build_tracker_mutation_service()
+        result = service.add_comment(
+            TrackerCommentRequest(
+                issue_identifier=issue_identifier,
+                body=_require_string_field(payload, "body"),
+            )
+        )
+    except (WorkflowError, WorkflowConfigError) as exc:
+        return _error_response(code=exc.code, message=exc.message, status=503)
+    except TrackerIssueNotFoundError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=404)
+    except TrackerValidationError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=400)
+    except TrackerMutationError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=502)
+
+    return JsonResponse(
+        {
+            "operation": "comment",
+            "status": result.status,
+            "issue": {"id": result.issue_id, "identifier": result.issue_identifier},
+            "comment": {
+                "id": result.comment_id,
+                "body": result.body,
+                "url": result.url,
+            },
+        }
+    )
+
+
+@csrf_exempt
+def tracker_transition(request: HttpRequest, issue_identifier: str) -> JsonResponse:
+    if request.method != "POST":
+        response = _error_response(
+            code="method_not_allowed",
+            message=(
+                f"Method {request.method!r} is not allowed for "
+                f"/api/v1/tracker/issues/{issue_identifier}/transition."
+            ),
+            status=405,
+        )
+        response["Allow"] = ALLOWED_TRACKER_MUTATION_METHODS
+        return response
+
+    try:
+        payload = _parse_json_body(request)
+        service = _build_tracker_mutation_service()
+        result = service.transition_issue(
+            TrackerTransitionRequest(
+                issue_identifier=issue_identifier,
+                target_state=_require_string_field(payload, "target_state"),
+            )
+        )
+    except (WorkflowError, WorkflowConfigError) as exc:
+        return _error_response(code=exc.code, message=exc.message, status=503)
+    except TrackerIssueNotFoundError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=404)
+    except TrackerValidationError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=400)
+    except TrackerMutationError as exc:
+        status = 409 if exc.code == "invalid_state_transition" else 502
+        return _error_response(code=exc.code, message=exc.message, status=status)
+
+    return JsonResponse(
+        {
+            "operation": "state_transition",
+            "status": result.status,
+            "issue": {"id": result.issue_id, "identifier": result.issue_identifier},
+            "transition": {
+                "from_state": result.from_state,
+                "to_state": result.to_state,
+            },
+        }
+    )
+
+
+@csrf_exempt
+def tracker_pull_request(request: HttpRequest, issue_identifier: str) -> JsonResponse:
+    if request.method != "POST":
+        response = _error_response(
+            code="method_not_allowed",
+            message=(
+                f"Method {request.method!r} is not allowed for "
+                f"/api/v1/tracker/issues/{issue_identifier}/pull-request."
+            ),
+            status=405,
+        )
+        response["Allow"] = ALLOWED_TRACKER_MUTATION_METHODS
+        return response
+
+    try:
+        payload = _parse_json_body(request)
+        service = _build_tracker_mutation_service()
+        result = service.attach_pull_request(
+            TrackerPullRequestRequest(
+                issue_identifier=issue_identifier,
+                url=_require_string_field(payload, "url"),
+                title=_require_string_field(payload, "title"),
+                subtitle=_optional_string_field(payload, "subtitle"),
+                branch_name=_optional_string_field(payload, "branch_name"),
+                repository=_optional_string_field(payload, "repository"),
+                status=_optional_string_field(payload, "status"),
+                metadata=_optional_metadata_field(payload, "metadata"),
+            )
+        )
+    except (WorkflowError, WorkflowConfigError) as exc:
+        return _error_response(code=exc.code, message=exc.message, status=503)
+    except TrackerIssueNotFoundError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=404)
+    except TrackerValidationError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=400)
+    except TrackerMutationError as exc:
+        return _error_response(code=exc.code, message=exc.message, status=502)
+
+    return JsonResponse(
+        {
+            "operation": "pull_request_attachment",
+            "status": result.status,
+            "issue": {"id": result.issue_id, "identifier": result.issue_identifier},
+            "pull_request": {
+                "attachment_id": result.attachment_id,
+                "title": result.title,
+                "url": result.url,
+                "subtitle": result.subtitle,
+                "metadata": result.metadata,
+            },
+        }
+    )
+
+
 def _error_response(*, code: str, message: str, status: int) -> JsonResponse:
     return JsonResponse(
         {"error": {"code": code, "message": message}},
@@ -208,3 +377,64 @@ def _render_issue_link(entry: dict[str, object]) -> str:
     raw_issue_identifier = str(entry.get("issue_identifier", ""))
     issue_identifier = escape(raw_issue_identifier)
     return f'<a href="/api/v1/{quote(raw_issue_identifier, safe="")}">{issue_identifier}</a>'
+
+
+@functools.cache
+def _build_tracker_mutation_service() -> TrackerMutationService:
+    definition = load_workflow_definition(cwd=Path.cwd())
+    config = build_service_config(definition)
+    validate_dispatch_config(config)
+    return build_tracker_mutation_service(config)
+
+
+def _parse_json_body(request: HttpRequest) -> dict[str, object]:
+    try:
+        raw_body = request.body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise TrackerValidationError("Request body must be valid UTF-8 JSON.") from exc
+
+    try:
+        payload = json.loads(raw_body or "{}")
+    except json.JSONDecodeError as exc:
+        raise TrackerValidationError("Request body must be valid JSON.") from exc
+
+    if not isinstance(payload, dict):
+        raise TrackerValidationError("Request body must decode to a JSON object.")
+    return payload
+
+
+def _require_string_field(payload: dict[str, object], field_name: str) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        raise TrackerValidationError(f"Field '{field_name}' must be a string.")
+    return value
+
+
+def _optional_string_field(payload: dict[str, object], field_name: str) -> str | None:
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TrackerValidationError(f"Field '{field_name}' must be a string when provided.")
+    return value
+
+
+def _optional_metadata_field(
+    payload: dict[str, object], field_name: str
+) -> dict[str, str | int | float | bool]:
+    value = payload.get(field_name)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TrackerValidationError(f"Field '{field_name}' must be an object when provided.")
+
+    metadata: dict[str, str | int | float | bool] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str):
+            raise TrackerValidationError(f"Field '{field_name}' must use string keys.")
+        if not isinstance(raw_value, str | int | float | bool):
+            raise TrackerValidationError(
+                f"Field '{field_name}' values must be strings, numbers, or booleans."
+            )
+        metadata[raw_key] = raw_value
+    return metadata

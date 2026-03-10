@@ -1,10 +1,15 @@
 from .linear import LinearPayloadError, normalize_linear_issue
 from .linear_client import (
+    CREATE_ATTACHMENT_MUTATION,
+    CREATE_COMMENT_MUTATION,
     DEFAULT_LINEAR_PAGE_SIZE,
     DEFAULT_LINEAR_TIMEOUT_MS,
     FETCH_CANDIDATE_ISSUES_QUERY,
     FETCH_ISSUE_STATES_BY_IDS_QUERY,
     FETCH_ISSUES_BY_STATES_QUERY,
+    FETCH_TRACKER_ISSUE_REFERENCE_QUERY,
+    FETCH_WORKFLOW_STATES_QUERY,
+    UPDATE_ISSUE_STATE_MUTATION,
     LinearAPIError,
     LinearAPIRequestError,
     LinearAPIStatusError,
@@ -14,10 +19,39 @@ from .linear_client import (
     LinearTransportResponse,
 )
 from .models import Issue, IssueBlocker
+from .write_contract import (
+    TrackerAttachment,
+    TrackerComment,
+    TrackerCommentRequest,
+    TrackerCommentResult,
+    TrackerInvalidTransitionError,
+    TrackerIssueNotFoundError,
+    TrackerIssueReference,
+    TrackerMutationError,
+    TrackerPullRequestRequest,
+    TrackerPullRequestResult,
+    TrackerRequestFailedError,
+    TrackerStatusError,
+    TrackerTransitionRequest,
+    TrackerTransitionResult,
+    TrackerValidationError,
+    TrackerWorkflowState,
+)
+from .write_contract import (
+    TrackerGraphQLError as TrackerMutationGraphQLError,
+)
+from .write_contract import (
+    TrackerPayloadError as TrackerMutationPayloadError,
+)
+from .write_service import TrackerMutationService, build_tracker_mutation_service
 
 __all__ = [
+    "CREATE_ATTACHMENT_MUTATION",
+    "CREATE_COMMENT_MUTATION",
     "DEFAULT_LINEAR_PAGE_SIZE",
     "DEFAULT_LINEAR_TIMEOUT_MS",
+    "FETCH_TRACKER_ISSUE_REFERENCE_QUERY",
+    "FETCH_WORKFLOW_STATES_QUERY",
     "FETCH_CANDIDATE_ISSUES_QUERY",
     "FETCH_ISSUE_STATES_BY_IDS_QUERY",
     "FETCH_ISSUES_BY_STATES_QUERY",
@@ -31,5 +65,26 @@ __all__ = [
     "LinearPayloadError",
     "LinearTrackerClient",
     "LinearTransportResponse",
+    "TrackerAttachment",
+    "TrackerComment",
+    "TrackerCommentRequest",
+    "TrackerCommentResult",
+    "TrackerInvalidTransitionError",
+    "TrackerIssueNotFoundError",
+    "TrackerIssueReference",
+    "TrackerMutationError",
+    "TrackerMutationGraphQLError",
+    "TrackerMutationPayloadError",
+    "TrackerMutationService",
+    "TrackerPullRequestRequest",
+    "TrackerPullRequestResult",
+    "TrackerRequestFailedError",
+    "TrackerStatusError",
+    "TrackerTransitionRequest",
+    "TrackerTransitionResult",
+    "TrackerValidationError",
+    "TrackerWorkflowState",
+    "UPDATE_ISSUE_STATE_MUTATION",
+    "build_tracker_mutation_service",
     "normalize_linear_issue",
 ]

@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: Updated after Milestone 5 closeout on 2026-03-10
+Status: Updated after Milestone 6 closeout on 2026-03-10
 
 Purpose: Record the major remaining implementation work after the core Symphony execution path
 landed, grouped by how each item relates to `docs/SPEC.md`.
@@ -24,8 +24,7 @@ The current implementation already has the main execution spine in place:
 - optional loopback HTTP dashboard/control surface
 
 This means the repository is no longer blocked on foundational orchestration plumbing. After the
-2026-03-10 Milestone 5 closeout, the main remaining work is the still-optional tracker write
-extension.
+2026-03-10 Milestone 6 closeout, the roadmap workstreams described here are implemented.
 
 ## Recently Completed
 
@@ -112,28 +111,34 @@ Validation recorded in `docs/EXEC_PLAN.md`:
   stale-state, and proxied refresh checks against local Django + Angular dev servers using
   `playwright-cli`
 
+### Tracker Write APIs
+
+This workstream is complete.
+
+Delivered behavior:
+- `apps/api/symphony/tracker/` now owns an explicit write contract and service layer for comments,
+  state transitions, and pull-request metadata attachment
+- the Linear adapter now supports the write-side lookups and mutations needed by that contract while
+  preserving typed request/payload error handling
+- Django exposes backend-owned `POST` endpoints under `/api/v1/tracker/issues/<issue_identifier>/`
+  for comments, transitions, and pull-request metadata attachment, all delegating through the same
+  tracker service
+- tracker mutation failures now normalize into stable error codes and each mutation category emits
+  structured `key=value` audit logs
+- backend acceptance tests cover redundant state transitions, invalid transitions, repeated
+  pull-request attachment requests, and explicit mutation response envelopes
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- focused tracker/backend suites: `62 passed in 0.09s`
+- repository-wide gates: `make lint` -> pass, `make typecheck` -> pass, `make test` -> pass
+
 ## Core Conformance Workstreams
 
 No currently confirmed core conformance workstreams remain after the 2026-03-10 re-audit.
 
 ## Recommended Extension Workstreams
 
-These items remain explicitly compatible with `docs/SPEC.md`, but they are not required for
-baseline conformance.
-
-### 1. First-Class Tracker Write APIs
-
-This remains the primary backend extension still open from the roadmap.
-
-Possible scope:
-- backend APIs or tool surfaces for tracker comments
-- backend APIs or tool surfaces for state transitions
-- normalized write/error semantics around tracker mutations
-
-Why it matters:
-- tracker writes such as comments, state transitions, and PR metadata are still expected to happen
-  via agent tools rather than a Symphony-owned API surface
-- It could reduce prompt/tooling drift and make tracker-side workflow behavior more explicit.
+No recommended extension workstreams remain after the 2026-03-10 Milestone 6 closeout.
 
 ## Product and UI Workstreams
 
@@ -151,10 +156,9 @@ This roadmap is broader:
 
 ## Suggested Priority Order
 
-1. First-class tracker write APIs
+No remaining roadmap workstreams are queued in this document.
 
 ## Next Planning Move
 
-When one workstream becomes the active implementation target, `docs/EXEC_PLAN.md` should be updated
-or replaced with a focused execution plan for that slice rather than trying to use this roadmap as
-an implementation checklist.
+When new work outside this roadmap becomes implementation-ready, record it in a new or updated
+execution plan instead of reviving already-completed roadmap items here.

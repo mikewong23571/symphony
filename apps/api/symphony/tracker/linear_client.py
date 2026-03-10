@@ -11,6 +11,14 @@ from symphony.workflow.config import TrackerConfig
 
 from .linear import LinearPayloadError, normalize_linear_issue
 from .models import Issue
+from .write_contract import (
+    JsonScalar,
+    TrackerAttachment,
+    TrackerComment,
+    TrackerIssueReference,
+    TrackerWorkflowState,
+    is_valid_json_scalar,
+)
 
 DEFAULT_LINEAR_TIMEOUT_MS = 30_000
 DEFAULT_LINEAR_PAGE_SIZE = 50
@@ -141,6 +149,113 @@ query FetchIssueStatesByIds($issueIds: [ID!]!) {
 }
 """.strip()
 
+FETCH_TRACKER_ISSUE_REFERENCE_QUERY = """
+query FetchTrackerIssueReference($projectSlug: String!, $issueIdentifier: String!) {
+  issues(
+    first: 1
+    filter: {
+      project: { slugId: { eq: $projectSlug } }
+      identifier: { eq: $issueIdentifier }
+    }
+  ) {
+    nodes {
+      id
+      identifier
+      state {
+        id
+        name
+      }
+      team {
+        id
+      }
+      project {
+        slugId
+      }
+    }
+  }
+}
+""".strip()
+
+FETCH_WORKFLOW_STATES_QUERY = """
+query FetchWorkflowStates($first: Int!, $after: String) {
+  workflowStates(first: $first, after: $after) {
+    nodes {
+      id
+      name
+      team {
+        id
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+""".strip()
+
+CREATE_COMMENT_MUTATION = """
+mutation CreateComment($issueId: String!, $body: String!) {
+  commentCreate(input: { issueId: $issueId, body: $body }) {
+    success
+    comment {
+      id
+      body
+      url
+    }
+  }
+}
+""".strip()
+
+CREATE_ATTACHMENT_MUTATION = """
+mutation CreateAttachment(
+  $issueId: String!
+  $title: String!
+  $url: String!
+  $subtitle: String
+  $metadata: JSONObject
+) {
+  attachmentCreate(input: {
+    issueId: $issueId
+    title: $title
+    url: $url
+    subtitle: $subtitle
+    metadata: $metadata
+  }) {
+    success
+    attachment {
+      id
+      title
+      url
+      subtitle
+      metadata
+    }
+  }
+}
+""".strip()
+
+UPDATE_ISSUE_STATE_MUTATION = """
+mutation UpdateIssueState($issueId: String!, $stateId: String!) {
+  issueUpdate(id: $issueId, input: { stateId: $stateId }) {
+    success
+    issue {
+      id
+      identifier
+      state {
+        id
+        name
+      }
+      team {
+        id
+      }
+      project {
+        slugId
+      }
+    }
+  }
+}
+""".strip()
+
 
 class LinearAPIError(Exception):
     code = "linear_api_error"
@@ -247,6 +362,92 @@ class LinearTrackerClient:
         )
         issue_nodes = _extract_issue_nodes(_extract_issues_connection(payload))
         return [normalize_linear_issue(issue_node) for issue_node in issue_nodes]
+
+    def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
+        normalized_issue_identifier = issue_identifier.strip()
+        if not normalized_issue_identifier:
+            return None
+
+        payload = self._fetch_graphql_payload(
+            query=FETCH_TRACKER_ISSUE_REFERENCE_QUERY,
+            variables={
+                "projectSlug": self.tracker_config.project_slug or "",
+                "issueIdentifier": normalized_issue_identifier,
+            },
+        )
+        issue_node = _extract_optional_issue_reference_node(payload)
+        if issue_node is None:
+            return None
+        return _normalize_issue_reference(issue_node)
+
+    def list_workflow_states(self) -> list[TrackerWorkflowState]:
+        after: str | None = None
+        workflow_states: list[TrackerWorkflowState] = []
+
+        while True:
+            payload = self._fetch_graphql_payload(
+                query=FETCH_WORKFLOW_STATES_QUERY,
+                variables={
+                    "first": DEFAULT_LINEAR_PAGE_SIZE,
+                    "after": after,
+                },
+            )
+            workflow_states_connection = _extract_workflow_states_connection(payload)
+            workflow_states.extend(_extract_workflow_states(workflow_states_connection))
+
+            page_info = _extract_page_info(
+                workflow_states_connection,
+                path="data.workflowStates",
+            )
+            if not page_info.has_next_page:
+                return workflow_states
+            if page_info.end_cursor is None:
+                raise LinearMissingEndCursorError(
+                    "Linear workflow state response is missing pageInfo.endCursor."
+                )
+            after = page_info.end_cursor
+
+    def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        payload = self._fetch_graphql_payload(
+            query=CREATE_COMMENT_MUTATION,
+            variables={"issueId": issue_id, "body": body},
+        )
+        mutation = _extract_mutation_payload(payload, "commentCreate")
+        return _extract_comment(mutation)
+
+    def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference:
+        payload = self._fetch_graphql_payload(
+            query=UPDATE_ISSUE_STATE_MUTATION,
+            variables={"issueId": issue_id, "stateId": state_id},
+        )
+        mutation = _extract_mutation_payload(payload, "issueUpdate")
+        issue_node = mutation.get("issue")
+        if not isinstance(issue_node, Mapping):
+            raise LinearPayloadError("Linear issueUpdate response is missing issue data.")
+        return _normalize_issue_reference(issue_node)
+
+    def create_attachment(
+        self,
+        *,
+        issue_id: str,
+        title: str,
+        url: str,
+        subtitle: str | None,
+        metadata: Mapping[str, JsonScalar],
+    ) -> TrackerAttachment:
+        validated_metadata = _validate_attachment_metadata(metadata)
+        payload = self._fetch_graphql_payload(
+            query=CREATE_ATTACHMENT_MUTATION,
+            variables={
+                "issueId": issue_id,
+                "title": title,
+                "url": url,
+                "subtitle": subtitle,
+                "metadata": validated_metadata or None,
+            },
+        )
+        mutation = _extract_mutation_payload(payload, "attachmentCreate")
+        return _extract_attachment(mutation)
 
     def _fetch_graphql_payload(
         self,
@@ -365,6 +566,13 @@ def _extract_issues_connection(payload: Mapping[str, Any]) -> Mapping[str, Any]:
     return issues
 
 
+def _extract_data(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        raise LinearPayloadError("Linear GraphQL response is missing data.")
+    return data
+
+
 def _extract_issue_nodes(issues: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     nodes = issues.get("nodes")
     if not isinstance(nodes, list):
@@ -379,21 +587,218 @@ def _extract_issue_nodes(issues: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return normalized_nodes
 
 
-def _extract_page_info(issues: Mapping[str, Any]) -> LinearPageInfo:
-    page_info = issues.get("pageInfo")
+def _extract_optional_issue_reference_node(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    issues_connection = _extract_issues_connection(payload)
+    issue_nodes = _extract_issue_nodes(issues_connection)
+    if not issue_nodes:
+        return None
+    return issue_nodes[0]
+
+
+def _extract_workflow_states_connection(payload: Mapping[str, Any]) -> Mapping[str, Any]:
+    data = _extract_data(payload)
+    workflow_states = data.get("workflowStates")
+    if not isinstance(workflow_states, Mapping):
+        raise LinearPayloadError("Linear workflow state response is missing data.workflowStates.")
+    return workflow_states
+
+
+def _extract_workflow_states(workflow_states: Mapping[str, Any]) -> list[TrackerWorkflowState]:
+    nodes = workflow_states.get("nodes")
+    if not isinstance(nodes, list):
+        raise LinearPayloadError(
+            "Linear workflow state response is missing data.workflowStates.nodes."
+        )
+
+    normalized_states: list[TrackerWorkflowState] = []
+    for node in nodes:
+        if not isinstance(node, Mapping):
+            raise LinearPayloadError("Linear workflow state response contains a malformed node.")
+        normalized_states.append(_normalize_workflow_state(node))
+    return normalized_states
+
+
+def _extract_mutation_payload(payload: Mapping[str, Any], mutation_name: str) -> Mapping[str, Any]:
+    data = _extract_data(payload)
+    mutation = data.get(mutation_name)
+    if not isinstance(mutation, Mapping):
+        raise LinearPayloadError(f"Linear {mutation_name} response is missing mutation data.")
+
+    success = mutation.get("success")
+    if success is not True:
+        raise LinearPayloadError(f"Linear {mutation_name} response did not report success.")
+    return mutation
+
+
+def _normalize_issue_reference(node: Mapping[str, Any]) -> TrackerIssueReference:
+    issue_id = _require_string(node, "id", "Linear issue response is missing issue.id.")
+    identifier = _require_string(
+        node,
+        "identifier",
+        "Linear issue response is missing issue.identifier.",
+    )
+    state = node.get("state")
+    if not isinstance(state, Mapping):
+        raise LinearPayloadError("Linear issue response is missing issue.state.")
+    state_id = _require_string(state, "id", "Linear issue response is missing issue.state.id.")
+    state_name = _require_string(
+        state,
+        "name",
+        "Linear issue response is missing issue.state.name.",
+    )
+    team = node.get("team")
+    if not isinstance(team, Mapping):
+        raise LinearPayloadError("Linear issue response is missing issue.team.")
+    team_id = _require_string(team, "id", "Linear issue response is missing issue.team.id.")
+    project = node.get("project")
+    project_slug: str | None = None
+    if project is not None:
+        if not isinstance(project, Mapping):
+            raise LinearPayloadError("Linear issue response contains a malformed issue.project.")
+        raw_project_slug = project.get("slugId")
+        if raw_project_slug is not None and not isinstance(raw_project_slug, str):
+            raise LinearPayloadError(
+                "Linear issue response contains a malformed issue.project.slugId."
+            )
+        project_slug = raw_project_slug
+    return TrackerIssueReference(
+        id=issue_id,
+        identifier=identifier,
+        state_id=state_id,
+        state_name=state_name,
+        team_id=team_id,
+        project_slug=project_slug,
+    )
+
+
+def _normalize_workflow_state(node: Mapping[str, Any]) -> TrackerWorkflowState:
+    state_id = _require_string(
+        node,
+        "id",
+        "Linear workflow state response is missing workflow state id.",
+    )
+    name = _require_string(
+        node,
+        "name",
+        "Linear workflow state response is missing workflow state name.",
+    )
+    team = node.get("team")
+    if not isinstance(team, Mapping):
+        raise LinearPayloadError("Linear workflow state response is missing workflow state team.")
+    team_id = _require_string(
+        team,
+        "id",
+        "Linear workflow state response is missing workflow state team id.",
+    )
+    return TrackerWorkflowState(id=state_id, name=name, team_id=team_id)
+
+
+def _extract_comment(mutation: Mapping[str, Any]) -> TrackerComment:
+    comment = mutation.get("comment")
+    if not isinstance(comment, Mapping):
+        raise LinearPayloadError("Linear commentCreate response is missing comment data.")
+    comment_id = _require_string(
+        comment,
+        "id",
+        "Linear commentCreate response is missing comment.id.",
+    )
+    body = _require_string(
+        comment,
+        "body",
+        "Linear commentCreate response is missing comment.body.",
+    )
+    url = comment.get("url")
+    if url is not None and not isinstance(url, str):
+        raise LinearPayloadError("Linear commentCreate response contains a malformed comment.url.")
+    return TrackerComment(id=comment_id, body=body, url=url)
+
+
+def _extract_attachment(mutation: Mapping[str, Any]) -> TrackerAttachment:
+    attachment = mutation.get("attachment")
+    if not isinstance(attachment, Mapping):
+        raise LinearPayloadError("Linear attachmentCreate response is missing attachment data.")
+    attachment_id = _require_string(
+        attachment,
+        "id",
+        "Linear attachmentCreate response is missing attachment.id.",
+    )
+    title = _require_string(
+        attachment,
+        "title",
+        "Linear attachmentCreate response is missing attachment.title.",
+    )
+    url = _require_string(
+        attachment,
+        "url",
+        "Linear attachmentCreate response is missing attachment.url.",
+    )
+    subtitle = attachment.get("subtitle")
+    if subtitle is not None and not isinstance(subtitle, str):
+        raise LinearPayloadError(
+            "Linear attachmentCreate response contains a malformed attachment.subtitle."
+        )
+    metadata = attachment.get("metadata")
+    if metadata is None:
+        normalized_metadata: dict[str, JsonScalar] = {}
+    else:
+        normalized_metadata = _normalize_attachment_metadata(metadata)
+    return TrackerAttachment(
+        id=attachment_id,
+        title=title,
+        url=url,
+        subtitle=subtitle,
+        metadata=normalized_metadata,
+    )
+
+
+def _normalize_attachment_metadata(value: object) -> dict[str, JsonScalar]:
+    if not isinstance(value, Mapping):
+        raise LinearPayloadError("Linear attachmentCreate response contains malformed metadata.")
+    normalized: dict[str, JsonScalar] = {}
+    for raw_key, raw_value in value.items():
+        if not isinstance(raw_key, str):
+            raise LinearPayloadError(
+                "Linear attachmentCreate response contains malformed metadata."
+            )
+        if not is_valid_json_scalar(raw_value):
+            raise LinearPayloadError(
+                "Linear attachmentCreate response contains malformed metadata."
+            )
+        normalized[raw_key] = raw_value
+    return normalized
+
+
+def _require_string(payload: Mapping[str, Any], key: str, message: str) -> str:
+    value = payload.get(key)
+    if not isinstance(value, str) or not value:
+        raise LinearPayloadError(message)
+    return value
+
+
+def _validate_attachment_metadata(metadata: Mapping[str, JsonScalar]) -> dict[str, JsonScalar]:
+    normalized: dict[str, JsonScalar] = {}
+    for key, value in metadata.items():
+        if not is_valid_json_scalar(value):
+            raise LinearPayloadError("Linear attachmentCreate request contains malformed metadata.")
+        normalized[key] = value
+    return normalized
+
+
+def _extract_page_info(
+    connection: Mapping[str, Any],
+    *,
+    path: str = "data.issues",
+) -> LinearPageInfo:
+    page_info = connection.get("pageInfo")
     if not isinstance(page_info, Mapping):
-        raise LinearPayloadError("Linear GraphQL response is missing data.issues.pageInfo.")
+        raise LinearPayloadError(f"Linear GraphQL response is missing {path}.pageInfo.")
 
     has_next_page = page_info.get("hasNextPage")
     if not isinstance(has_next_page, bool):
-        raise LinearPayloadError(
-            "Linear GraphQL response is missing data.issues.pageInfo.hasNextPage."
-        )
+        raise LinearPayloadError(f"Linear GraphQL response is missing {path}.pageInfo.hasNextPage.")
 
     end_cursor = page_info.get("endCursor")
     if end_cursor is not None and not isinstance(end_cursor, str):
-        raise LinearPayloadError(
-            "Linear GraphQL response is missing data.issues.pageInfo.endCursor."
-        )
+        raise LinearPayloadError(f"Linear GraphQL response is missing {path}.pageInfo.endCursor.")
 
     return LinearPageInfo(has_next_page=has_next_page, end_cursor=end_cursor)

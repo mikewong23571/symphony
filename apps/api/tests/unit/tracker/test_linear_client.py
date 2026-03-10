@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
 import pytest
 from symphony.tracker import (
+    CREATE_ATTACHMENT_MUTATION,
+    CREATE_COMMENT_MUTATION,
     DEFAULT_LINEAR_PAGE_SIZE,
     FETCH_CANDIDATE_ISSUES_QUERY,
     FETCH_ISSUE_STATES_BY_IDS_QUERY,
     FETCH_ISSUES_BY_STATES_QUERY,
+    FETCH_TRACKER_ISSUE_REFERENCE_QUERY,
+    FETCH_WORKFLOW_STATES_QUERY,
+    UPDATE_ISSUE_STATE_MUTATION,
     LinearAPIRequestError,
     LinearAPIStatusError,
     LinearGraphQLError,
@@ -422,3 +428,261 @@ def test_fetch_issue_states_by_ids_reuses_existing_typed_error_handling(
 
     with pytest.raises(error_type):
         client.fetch_issue_states_by_ids(["issue-42"])
+
+
+def test_get_issue_reference_queries_by_human_identifier() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "issues": {
+                            "nodes": [
+                                {
+                                    "id": "issue-42",
+                                    "identifier": "SYM-042",
+                                    "state": {"id": "state-1", "name": "Todo"},
+                                    "team": {"id": "team-1"},
+                                    "project": {"slugId": "symphony"},
+                                }
+                            ]
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    issue = client.get_issue_reference(" SYM-042 ")
+
+    assert issue is not None
+    assert issue.identifier == "SYM-042"
+    assert issue.state_name == "Todo"
+    assert issue.team_id == "team-1"
+    assert transport.calls[0]["variables"] == {
+        "projectSlug": "symphony",
+        "issueIdentifier": "SYM-042",
+    }
+    assert transport.calls[0]["query"] == FETCH_TRACKER_ISSUE_REFERENCE_QUERY
+
+
+def test_list_workflow_states_returns_team_scoped_state_records() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "workflowStates": {
+                            "nodes": [
+                                {"id": "state-1", "name": "Todo", "team": {"id": "team-1"}},
+                                {
+                                    "id": "state-2",
+                                    "name": "In Progress",
+                                    "team": {"id": "team-1"},
+                                },
+                            ],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    states = client.list_workflow_states()
+
+    assert [(state.id, state.name, state.team_id) for state in states] == [
+        ("state-1", "Todo", "team-1"),
+        ("state-2", "In Progress", "team-1"),
+    ]
+    assert transport.calls[0]["query"] == FETCH_WORKFLOW_STATES_QUERY
+    assert transport.calls[0]["variables"] == {
+        "first": DEFAULT_LINEAR_PAGE_SIZE,
+        "after": None,
+    }
+    assert "$first: Int!" in FETCH_WORKFLOW_STATES_QUERY
+    assert "pageInfo" in FETCH_WORKFLOW_STATES_QUERY
+
+
+def test_list_workflow_states_paginates_across_pages() -> None:
+    transport = RecordingTransport(
+        responses=[
+            LinearTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "data": {
+                            "workflowStates": {
+                                "nodes": [
+                                    {"id": "state-1", "name": "Todo", "team": {"id": "team-1"}},
+                                ],
+                                "pageInfo": {"hasNextPage": True, "endCursor": "cursor-1"},
+                            }
+                        }
+                    }
+                ),
+            ),
+            LinearTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "data": {
+                            "workflowStates": {
+                                "nodes": [
+                                    {
+                                        "id": "state-99",
+                                        "name": "Human Review",
+                                        "team": {"id": "team-1"},
+                                    },
+                                ],
+                                "pageInfo": {"hasNextPage": False, "endCursor": "cursor-2"},
+                            }
+                        }
+                    }
+                ),
+            ),
+        ]
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    states = client.list_workflow_states()
+
+    assert [(state.id, state.name) for state in states] == [
+        ("state-1", "Todo"),
+        ("state-99", "Human Review"),
+    ]
+    assert len(transport.calls) == 2
+    assert transport.calls[0]["variables"]["after"] is None
+    assert transport.calls[1]["variables"]["after"] == "cursor-1"
+
+
+def test_create_comment_returns_normalized_comment_record() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "commentCreate": {
+                            "success": True,
+                            "comment": {
+                                "id": "comment-1",
+                                "body": "Ready for review",
+                                "url": "https://linear.app/comment-1",
+                            },
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    comment = client.create_comment("issue-42", "Ready for review")
+
+    assert comment.id == "comment-1"
+    assert comment.body == "Ready for review"
+    assert transport.calls[0]["query"] == CREATE_COMMENT_MUTATION
+    assert transport.calls[0]["variables"] == {
+        "issueId": "issue-42",
+        "body": "Ready for review",
+    }
+
+
+def test_update_issue_state_returns_updated_issue_reference() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "issueUpdate": {
+                            "success": True,
+                            "issue": {
+                                "id": "issue-42",
+                                "identifier": "SYM-042",
+                                "state": {"id": "state-2", "name": "In Progress"},
+                                "team": {"id": "team-1"},
+                                "project": {"slugId": "symphony"},
+                            },
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    issue = client.update_issue_state("issue-42", "state-2")
+
+    assert issue.state_id == "state-2"
+    assert issue.state_name == "In Progress"
+    assert transport.calls[0]["query"] == UPDATE_ISSUE_STATE_MUTATION
+    assert transport.calls[0]["variables"] == {"issueId": "issue-42", "stateId": "state-2"}
+
+
+def test_create_attachment_sends_scalar_inputs_as_variables() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "attachmentCreate": {
+                            "success": True,
+                            "attachment": {
+                                "id": "attachment-1",
+                                "title": "PR #1",
+                                "url": "https://github.com/acme/symphony/pull/1",
+                                "subtitle": "Open",
+                                "metadata": {
+                                    "branch_name": "feature/sym-123",
+                                    "status": "open",
+                                },
+                            },
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    attachment = client.create_attachment(
+        issue_id="issue-42",
+        title="PR #1",
+        url="https://github.com/acme/symphony/pull/1",
+        subtitle="Open",
+        metadata={"branch_name": "feature/sym-123", "status": "open"},
+    )
+
+    assert attachment.id == "attachment-1"
+    assert attachment.metadata["branch_name"] == "feature/sym-123"
+    assert transport.calls[0]["query"] == CREATE_ATTACHMENT_MUTATION
+    assert transport.calls[0]["variables"] == {
+        "issueId": "issue-42",
+        "title": "PR #1",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": "Open",
+        "metadata": {"branch_name": "feature/sym-123", "status": "open"},
+    }
+
+
+def test_create_attachment_rejects_non_finite_metadata_before_transport() -> None:
+    transport = RecordingTransport()
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    with pytest.raises(LinearPayloadError, match="request contains malformed metadata"):
+        client.create_attachment(
+            issue_id="issue-42",
+            title="PR #2",
+            url="https://github.com/acme/symphony/pull/2",
+            subtitle=None,
+            metadata={"build_time_seconds": math.nan},
+        )
+
+    assert transport.calls == []
