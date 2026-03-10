@@ -6,7 +6,7 @@ This document must be maintained in accordance with `.agent/PLANS.md`.
 
 ## Purpose / Big Picture
 
-`docs/ROADMAP.md` is the repository-level statement of the major work still needed after Symphony’s core execution path landed. The repository can already poll Linear, create workspaces, run the coding agent, reconcile state, and publish runtime snapshots, but operators still need a more complete product: stronger structured logging, tighter runtime polish, restart-safe state recovery, configurable observability behavior, a real Angular dashboard, and an explicit tracker write surface.
+`docs/ROADMAP.md` is the repository-level statement of the major work still needed after Symphony’s core execution path landed. The repository can already poll Linear, create workspaces, run the coding agent, reconcile state, publish runtime snapshots, emit structured logs, recover retry/session state across restarts, and apply workflow-owned observability settings. The remaining roadmap work is now concentrated on a real Angular dashboard and an explicit tracker write surface.
 
 When this plan is complete, an operator will be able to start the orchestrator, observe stable `key=value` lifecycle logs for dispatch and recovery, restart the process without losing retry timing and session summaries, open an Angular dashboard that consumes the existing `/api/v1/*` runtime endpoints, inspect issue and retry details there, and optionally use backend-owned tracker write endpoints instead of depending only on agent tools for comments or transitions. The proof is behavioral: focused tests pass at each milestone, repository-wide quality gates pass, the docs are updated to match reality, and a human can manually exercise the runtime and UI surfaces without reading the source first.
 
@@ -14,10 +14,14 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 - [x] 2026-03-10 12:14Z: Audited `docs/ROADMAP.md`, `docs/SPEC.md`, `docs/SPEC_GAPS.md`, `.agent/PLANS.md`, the archived ExecPlan in `docs/archive/EXEC_PLAN_SPEC_GAPS_CONFORMANCE_2026-03-10.md`, and the current backend/frontend entrypoints to identify the concrete modules each roadmap workstream touches.
 - [x] 2026-03-10 12:14Z: Replaced the placeholder `docs/EXEC_PLAN.md` with a repository-specific ExecPlan that turns the roadmap workstreams into sequenced milestones with commands, acceptance criteria, and file-level orientation.
-- [ ] Milestone 1 is not started: finish structured logging and observability maturity, then update `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan to reflect the new baseline.
-- [ ] Milestone 2 is not started: close workspace and runtime polish gaps, then update the gap audit and this ExecPlan with exact validation evidence.
-- [ ] Milestone 3 is not started: complete restart recovery and state persistence, then record the recovery file behavior, restart semantics, and test evidence in this ExecPlan.
-- [ ] Milestone 4 is not started: add workflow-configurable observability settings, then capture the final config shape in both docs and tests.
+- [x] 2026-03-10 13:48Z: Re-audited Milestone 1 against `docs/SPEC.md` Sections 13, 17, and 18 plus the current backend code and tests. The runtime already emits structured `key=value` logs for tracker fetch failures, running-state refresh failures, startup cleanup, hook start/failure/timeout, retry scheduling, worker exit, workflow reload failures, and app-server `stderr` diagnostics, so no Milestone 1 backend code changes were required.
+- [x] 2026-03-10 14:02Z: Ran the Milestone 1 baseline backend suite from this ExecPlan and observed `155 passed in 13.56s`.
+- [x] 2026-03-10 14:18Z: Ran the Milestone 1 focused backend suite serially and observed `109 passed in 12.14s`.
+- [x] 2026-03-10 14:23Z: Marked Milestone 1 complete by updating `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan to match the implemented observability baseline and recorded the validation evidence here.
+- [x] 2026-03-10 14:44Z: Re-audited Milestone 2 against the current backend code and tests, confirmed that workspace temp-artifact cleanup, prompt parse-versus-render taxonomy, and token accounting hardening were already implemented, and re-ran the Milestone 2 focused suite with `87 passed in 9.48s`.
+- [x] 2026-03-10 14:46Z: Re-audited Milestone 3 against the current backend code and tests, confirmed that restart recovery persistence and corrupt-recovery fallback behavior were already implemented, and re-ran the Milestone 3 focused suite with `98 passed in 4.22s`.
+- [x] 2026-03-10 14:47Z: Re-audited Milestone 4 against the current backend code and tests, confirmed that workflow-configurable observability settings and reload application behavior were already implemented, and re-ran the Milestone 4 focused suite with `98 passed in 4.22s`.
+- [x] 2026-03-10 14:51Z: Updated `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan so milestones 1-4 reflect the actual implemented baseline, leaving only Milestones 5 and 6 as open roadmap work.
 - [ ] Milestone 5 is not started: replace the Angular placeholder screen with real runtime pages and record manual and automated frontend validation here.
 - [ ] Milestone 6 is not started: introduce first-class tracker write APIs and validate them with backend tests and an end-to-end operator-facing flow.
 
@@ -31,6 +35,12 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 - Observation: `docs/ROADMAP.md` is broader than `docs/SPEC_GAPS.md`. Some workstreams are core conformance gaps, some are recommended extensions from `docs/SPEC.md`, and some are product delivery items with no direct spec conformance requirement.
   Evidence: the roadmap explicitly groups work into `Core Conformance Workstreams`, `Recommended Extension Workstreams`, and `Product and UI Workstreams`.
+
+- Observation: Milestone 1 code had already landed before this closeout, but the living docs still described the observability layer as largely unimplemented.
+  Evidence: the Milestone 1 focused suite already passes with assertions for `event=tracker_candidate_fetch_failed`, `event=tracker_running_state_refresh_failed`, `event=workflow_reload_failed`, `event=hook_started`, `event=hook_failed`, `event=hook_timed_out`, `event=retry_scheduled`, `event=worker_exit`, and `event=app_server_stderr`.
+
+- Observation: the same documentation drift extended beyond Milestone 1. Current code and focused pytest suites show that Milestones 2, 3, and 4 had already landed as well.
+  Evidence: `apps/api/symphony/workspace/manager.py` already implements `remove_temporary_artifacts(...)`; `apps/api/symphony/agent_runner/prompting.py` already exposes `PromptTemplateParseError` and `PromptTemplateRenderError`; `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/orchestrator/recovery.py` already persist and restore recovery state; `apps/api/symphony/workflow/config.py` already defines `ObservabilityConfig`; and the re-run focused suites for Milestones 2-4 all passed on 2026-03-10.
 
 ## Decision Log
 
@@ -46,11 +56,19 @@ When this plan is complete, an operator will be able to start the orchestrator, 
   Rationale: the repository already contains evidence that docs and code can drift on the same day. A milestone is not complete until `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan describe the actual resulting state.
   Date/Author: 2026-03-10 / Codex
 
+- Decision: Treat the Milestone 1 closeout as a documentation-and-validation update rather than force additional backend changes.
+  Rationale: the current implementation and focused pytest coverage already satisfy the observability scope described for Milestone 1. Writing redundant code here would increase risk without adding missing behavior.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Treat Milestones 2, 3, and 4 the same way after re-audit and focused validation, and collapse the remaining roadmap backlog to Milestones 5 and 6.
+  Rationale: the current repository already contains the workspace polish, restart recovery, and workflow-configurable observability behaviors those milestones describe. Leaving them marked open would misstate the codebase and create stale follow-up work.
+  Date/Author: 2026-03-10 / Codex
+
 ## Outcomes & Retrospective
 
-This plan is currently in the “planning completed, implementation not started” state. The placeholder `docs/EXEC_PLAN.md` has been replaced with an executable roadmap that a new contributor can follow without reconstructing context from multiple documents. No code or behavior has changed yet, so no roadmap item should be considered complete from this plan alone.
+Milestones 1 through 4 are now recorded as complete. The repository already met those backend roadmap goals before this closeout: structured logs are operator-visible, workspace prep and prompt taxonomy match the spec intent, restart recovery persists retry/session summaries, and workflow front matter already configures observability paths and freshness. This closeout re-ran the milestone-focused pytest suites, synchronized the living docs with the observed behavior, and removed stale gap language from the roadmap audit.
 
-Success for this plan means all six workstreams are either implemented here or intentionally split into successor ExecPlans with this document updated to reflect the handoff. At that point the backend will meet the remaining roadmap expectations, the frontend will expose a real operator experience, the tracker write path will be explicit, and the roadmap and gap docs will stop lagging behind the implementation.
+The remaining roadmap work is now concentrated in Milestone 5 (the Angular runtime pages) and Milestone 6 (first-class tracker write APIs). Future contributors should still begin those milestones with a fresh code audit, because this repository has already shown that implementation can get ahead of the active plan.
 
 ## Context and Orientation
 
@@ -66,6 +84,8 @@ The existing tests relevant to this plan already live in the repository and shou
 
 ### Milestone 1: Finish structured logging and observability maturity
 
+Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+
 At the end of this milestone, every operator-significant dispatch, retry, reconciliation, workflow-reload, hook, startup, and app-server diagnostic path described in `docs/ROADMAP.md` will emit stable operator-visible structured logs. This is the first milestone because the rest of the roadmap depends on being able to see what the system is doing and why it failed.
 
 Begin by re-auditing the current logging and observability paths against `docs/SPEC.md` Sections 13, 17, and 18, the open items in `docs/SPEC_GAPS.md`, and the reality of `apps/api/symphony/orchestrator/core.py`, `apps/api/symphony/agent_runner/harness.py`, `apps/api/symphony/agent_runner/client.py`, `apps/api/symphony/workspace/hooks.py`, and `apps/api/symphony/management/commands/run_orchestrator.py`. The repository already has `apps/api/symphony/observability/logging.py`; extend and standardize that helper instead of introducing a second logging format. Confirm that the key lifecycle events called out in the roadmap really emit `key=value` lines with stable field order and enough context for operators to correlate issue, session, hook, retry, and startup failures.
@@ -76,6 +96,8 @@ The milestone is complete only when the focused backend tests assert log output,
 
 ### Milestone 2: Close workspace and runtime polish gaps
 
+Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+
 At the end of this milestone, the smaller remaining core-runtime mismatches from the roadmap will be closed so the backend behavior matches the spec surface more exactly rather than only “in spirit.” This work is intentionally grouped because these gaps are small but easy to lose if they are scattered across unrelated feature work.
 
 Start in `apps/api/symphony/workspace/manager.py` and `apps/api/symphony/agent_runner/harness.py`. Ensure every attempt performs a safe pre-run cleanup of repository-local temporary artifacts such as `tmp` and `.elixir_ls` directly inside the per-issue workspace before hooks or the agent run. The cleanup must prove the target still sits under the intended workspace root before removing anything, and repeated attempts must be safe. Failures in this preparation step should be typed and operator-visible, not silently ignored.
@@ -84,6 +106,8 @@ Then refine prompt rendering in `apps/api/symphony/agent_runner/prompting.py` so
 
 ### Milestone 3: Complete restart recovery and state persistence
 
+Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+
 At the end of this milestone, restarting the Symphony process will no longer drop retry timing and live-session summary state. This is the largest recommended extension in the roadmap and the one with the clearest operator value after core conformance work is finished.
 
 Treat `apps/api/symphony/orchestrator/core.py` as the owner of live policy and `apps/api/symphony/orchestrator/recovery.py` as a pure serializer/deserializer. Persist the minimal durable runtime state needed to recover the retry queue and last known session metadata: retry attempt number, due time, workspace path, last error, and the summary of the session fields already tracked on `RunningEntry`. Use atomic write-then-replace semantics, the same style already used for runtime snapshot files, so a crash cannot leave a half-written recovery file.
@@ -91,6 +115,8 @@ Treat `apps/api/symphony/orchestrator/core.py` as the owner of live policy and `
 On startup, load the recovery file before the first steady-state poll. Missing recovery state should mean “nothing to restore.” Corrupt recovery state must produce a warning log and then continue with a clean in-memory state. Persisted retry entries should restore their timers using wall-clock due times. Persisted running entries must not be treated as resumed processes; convert them into retry entries with an explicit restart error and preserve the last session summary so operators can still see what had been running. End this milestone by updating the recovery-related docs and by proving the behavior with focused restart tests, including overdue retries and corrupt recovery files.
 
 ### Milestone 4: Add workflow-configurable observability settings
+
+Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
 
 At the end of this milestone, observability settings that matter to operators will be configurable from `WORKFLOW.md` front matter while still allowing environment variable overrides where needed for tests or host-level control. This work comes after recovery because the recovery and snapshot files are the first settings that obviously benefit from a typed configuration surface.
 
@@ -257,6 +283,8 @@ If a later milestone needs to add more routes or tracker-mutation controls, docu
 `docs/SPEC.md` remains the normative behavior contract. `docs/ROADMAP.md` is the prioritization source for this plan. `docs/SPEC_GAPS.md` is the authoritative gap audit that must be updated as milestones close.
 
 The backend should keep using Python 3.12, Django, `ruff`, `mypy`, and pytest as described in `AGENTS.md`. The frontend should keep using Angular standalone components, strict TypeScript, Tailwind, ESLint, Prettier, and Vitest.
+
+Revision note (2026-03-10 / Codex): Updated the ExecPlan after a broader re-audit showed that Milestones 1 through 4 were already implemented. Recorded the re-run focused pytest results for Milestones 2-4, marked those milestones complete, and synchronized the living-document sections to match the actual codebase state.
 
 For Milestones 1 through 4, keep `apps/api/symphony/orchestrator/core.py` as the single owner of live runtime state and policy decisions. `apps/api/symphony/observability/logging.py` should remain the sole formatting boundary for structured backend logs. `apps/api/symphony/orchestrator/recovery.py` should remain a serializer/deserializer module rather than becoming a second orchestrator. `apps/api/symphony/workflow/config.py` should remain the typed home for workflow-derived settings, including any new observability configuration.
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Status: Planning snapshot as of 2026-03-10
+Status: Updated after Milestone 4 re-audit on 2026-03-10
 
 Purpose: Record the major remaining implementation work after the core Symphony execution path
 landed, grouped by how each item relates to `docs/SPEC.md`.
@@ -23,106 +23,81 @@ The current implementation already has the main execution spine in place:
 - runtime snapshot export and JSON status endpoints
 - optional loopback HTTP dashboard/control surface
 
-This means the repository is no longer blocked on foundational orchestration plumbing. The main
-remaining work now falls into three buckets:
+This means the repository is no longer blocked on foundational orchestration plumbing. After the
+2026-03-10 re-audit, the main remaining work is product delivery plus the still-optional tracker
+write extension.
 
-- core conformance work needed to close remaining `docs/SPEC.md` gaps
-- recommended extensions explicitly called out by `docs/SPEC.md`
-- product and UI work that improves the system but is not required for spec conformance
+## Recently Completed
+
+### Structured Logging and Observability Maturity
+
+This workstream is complete.
+
+Delivered behavior:
+- stable `key=value` logs for tracker candidate fetch failures, running-state refresh failures,
+  workflow reload failures, startup cleanup failures, retry scheduling, and worker exits
+- hook lifecycle logs for start, timeout, and failure while preserving best-effort behavior for
+  non-fatal hooks
+- app-server `stderr` diagnostics surfaced through operator-visible logs with issue/session context
+- token and rate-limit snapshot behavior covered by focused backend tests
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- baseline backend suite: `155 passed in 13.56s`
+- Milestone 1 focused suite: `109 passed in 12.14s`
+
+### Workspace and Runtime Polish Gaps
+
+This workstream is complete.
+
+Delivered behavior:
+- per-attempt workspace prep removes `tmp` and `.elixir_ls` safely before hooks and agent launch
+- prompt template parse failures and render failures use distinct typed error codes
+- token aggregation accepts event-defined absolute totals without double-counting repeated updates or
+  polluting totals with delta-only payloads
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- Milestone 2 focused suite: `87 passed in 9.48s`
+
+### Restart Recovery and State Persistence
+
+This workstream is complete.
+
+Delivered behavior:
+- retry queue entries and prior session metadata persist to a recovery file with atomic replace
+  semantics
+- startup restores retry timing, converts recovered running entries into retry rows, and tolerates
+  corrupt recovery state with warning logs
+- runtime snapshots and issue-detail state preserve prior session summaries across restart recovery
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- Milestone 3 focused suite: `98 passed in 4.22s`
+
+### Configurable Observability Settings
+
+This workstream is complete.
+
+Delivered behavior:
+- `WORKFLOW.md` front matter supports typed `observability` settings for snapshot, refresh-request,
+  recovery paths, and snapshot freshness
+- management-command startup and orchestrator workflow reloads apply those settings to future
+  runtime writes
+- backend tests cover the configured-path and reload behavior
+
+Validation recorded in `docs/EXEC_PLAN.md`:
+- Milestone 4 focused suite: `98 passed in 4.22s`
 
 ## Core Conformance Workstreams
 
-These items are the remaining larger workstreams that most directly affect alignment with the core
-behavior expected by `docs/SPEC.md`.
-
-### 1. Structured Logging and Observability Maturity
-
-The repository has runtime snapshots and an HTTP observability surface, but not a fully realized
-structured logging layer.
-
-Current limitation:
-- required issue/session-scoped structured logs are incomplete
-- several failure paths are not operator-visible enough
-- hook failures and app-server stderr diagnostics are not fully surfaced
-- token accounting semantics still need to be hardened
-
-Scope examples:
-- structured `key=value` lifecycle logs for issue dispatch, worker exit, retry scheduling, reload,
-  reconciliation, and startup failures
-- hook start/failure/timeout logging with safe truncation
-- stderr diagnostic logging for app-server processes
-- stronger token/rate-limit aggregation semantics
-- closure of the currently documented spec gaps in `docs/SPEC_GAPS.md`
-
-Why it matters:
-- This is the next layer of operator readiness after the core runtime exists.
-- It closes multiple remaining core conformance gaps without changing the orchestration boundary.
-
-### 2. Workspace and Runtime Polish Gaps
-
-Several smaller runtime gaps remain that are better treated as one cleanup tranche than as isolated
-micro-projects.
-
-Current limitation:
-- workspace prep does not remove temporary artifacts such as `tmp` and `.elixir_ls`
-- prompt-rendering error taxonomy is still coarser than the spec
-- a few runtime behaviors are implemented correctly in spirit but not yet at the exact spec surface
-
-Scope examples:
-- add workspace prep cleanup before agent launch
-- split template parse vs template render error classes
-- finish the smaller core items tracked in `docs/SPEC_GAPS.md`
-
-Why it matters:
-- These are the remaining smaller core conformance items outside the larger observability slice.
-- Grouping them keeps the cleanup work visible instead of scattering it across unrelated tasks.
+No currently confirmed core conformance workstreams remain after the 2026-03-10 re-audit.
 
 ## Recommended Extension Workstreams
 
-These items are explicitly compatible with `docs/SPEC.md` and are called out there as recommended
-extensions or follow-on implementation work, but they are not required for basic core conformance.
+These items remain explicitly compatible with `docs/SPEC.md`, but they are not required for
+baseline conformance.
 
-### 1. Restart Recovery and State Persistence
+### 1. First-Class Tracker Write APIs
 
-This is the most important remaining recommended extension workstream.
-
-Current limitation:
-- Orchestrator state is still effectively in-memory for scheduling and live session metadata.
-- Process restart loses retry queue timing and running-session summary state.
-
-Minimum scope:
-- persist retry queue entries
-- persist session metadata and running-entry summaries
-- load persisted recovery state during orchestrator startup
-- deterministically settle or requeue in-flight runs that cannot be resumed
-- add restart-recovery tests and corrupted-state fallback tests
-
-Why it matters:
-- This closes the biggest remaining operational gap in long-running service behavior.
-- It is the clearest next step toward stronger restart recovery without introducing a database.
-
-### 2. Configurable Observability Settings
-
-This is a smaller extension that becomes more useful once the structured logging layer exists.
-
-Current limitation:
-- observability and logging behavior are not yet configurable through workflow front matter
-
-Possible scope:
-- workflow-front-matter settings for log sinks, verbosity, or snapshot behavior
-- typed config and validation for observability-specific settings
-
-Why it matters:
-- It gives operators more control without prescribing a UI implementation.
-- It is useful, but secondary to restart recovery and core observability correctness.
-
-### 3. First-Class Tracker Write APIs
-
-This remains a follow-on extension rather than a core runtime gap.
-
-Current limitation:
-- tracker writes such as comments, state transitions, and PR metadata are still expected to happen
-  via agent tools rather than a Symphony-owned API surface
+This remains the primary backend extension still open from the roadmap.
 
 Possible scope:
 - backend APIs or tool surfaces for tracker comments
@@ -130,8 +105,9 @@ Possible scope:
 - normalized write/error semantics around tracker mutations
 
 Why it matters:
+- tracker writes such as comments, state transitions, and PR metadata are still expected to happen
+  via agent tools rather than a Symphony-owned API surface
 - It could reduce prompt/tooling drift and make tracker-side workflow behavior more explicit.
-- It is not the highest-priority gap while recovery and observability are still incomplete.
 
 ## Product and UI Workstreams
 
@@ -176,20 +152,15 @@ Why it matters:
 `docs/SPEC_GAPS.md` is the authoritative list of currently confirmed spec gaps.
 
 This roadmap is broader:
-- `Core Conformance Workstreams` describe grouped implementation themes needed to close remaining
-  core gaps
+- `docs/SPEC_GAPS.md` currently reports no confirmed core conformance gaps
 - `Recommended Extension Workstreams` describe follow-on work explicitly compatible with the spec
 - `Product and UI Workstreams` describe delivery work that improves the product but is not required
   for spec conformance
 
 ## Suggested Priority Order
 
-1. Structured logging and observability maturity
-2. Workspace and runtime polish gaps
-3. Restart recovery and state persistence
-4. Configurable observability settings
-5. Angular frontend runtime pages
-6. First-class tracker write APIs
+1. Angular frontend runtime pages
+2. First-class tracker write APIs
 
 ## Next Planning Move
 
