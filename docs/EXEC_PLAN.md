@@ -94,6 +94,15 @@ state transitions rather than low-level Codex protocol uncertainty.
   effort workspace-path fallback for degenerate issue identifiers instead of raising from
   `resolve_workspace_path(...)`, and added focused orchestrator coverage for running/retrying rows
   with invalid workspace identifiers.
+- [x] 2026-03-10 05:49Z: Added `POST /api/v1/refresh` as the first operational control trigger,
+  implemented a file-backed refresh-request bridge in `apps/api/symphony/observability/runtime.py`,
+  taught `apps/api/symphony/orchestrator/core.py` to consume coalesced refresh requests between poll
+  cycles, and added focused API/orchestrator coverage for request queueing, method handling, stale
+  parent-path behavior, and early wake-up from the wait loop.
+- [x] 2026-03-10 05:57Z: Fixed the follow-up `/api/v1/refresh` usability regression by marking the
+  operational trigger endpoint CSRF-exempt in `apps/api/symphony/api/views.py` and adding an
+  `enforce_csrf_checks=True` API test so curl/dashboard-style clients can use the trigger under the
+  default Django middleware stack.
 
 ## Surprises & Discoveries
 
@@ -265,6 +274,10 @@ state transitions rather than low-level Codex protocol uncertainty.
   longer fail when tracker identifiers are too degenerate for `WorkspaceManager` sanitization; the
   observability surface now falls back to a best-effort workspace path in the same way the worker
   harness already does.
+- 2026-03-10: Added the first operational control hook to the optional HTTP surface. `POST
+  /api/v1/refresh` now queues a best-effort poll+reconcile trigger through a small shared file, and
+  the orchestrator consumes that trigger between normal poll intervals without moving scheduling
+  logic into Django.
 
 ## Context and Orientation
 

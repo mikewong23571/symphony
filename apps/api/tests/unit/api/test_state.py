@@ -9,10 +9,14 @@ from pathlib import Path
 import pytest
 from django.test import Client
 from symphony.observability.runtime import (
+    DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME,
     DEFAULT_RUNTIME_SNAPSHOT_FILENAME,
     RuntimeSnapshotUnavailableError,
+    clear_runtime_refresh_request_file,
     clear_runtime_snapshot_file,
     clear_runtime_snapshot_provider,
+    consume_runtime_refresh_request,
+    get_runtime_refresh_request_path,
     get_runtime_snapshot_path,
     publish_runtime_snapshot,
 )
@@ -37,9 +41,11 @@ class SilentTrackerClient:
 def clear_snapshot_state() -> Generator[None, None, None]:
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
+    _clear_refresh_request_file_best_effort()
     yield
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
+    _clear_refresh_request_file_best_effort()
 
 
 def build_config(*, tmp_path: Path) -> ServiceConfig:
@@ -137,6 +143,62 @@ def test_state_endpoint_rejects_post_with_405_error_envelope() -> None:
         "error": {
             "code": "method_not_allowed",
             "message": "Method 'POST' is not allowed for /api/v1/state.",
+        }
+    }
+
+
+def test_refresh_endpoint_queues_runtime_refresh_request() -> None:
+    response = Client().post("/api/v1/refresh", data={})
+
+    assert response.status_code == 202
+    payload = response.json()
+    assert payload["queued"] is True
+    assert payload["coalesced"] is False
+    assert payload["operations"] == ["poll", "reconcile"]
+    assert isinstance(payload["requested_at"], str)
+    assert get_runtime_refresh_request_path().is_file()
+
+    consumed_request = consume_runtime_refresh_request()
+    assert consumed_request == {
+        "requested_at": payload["requested_at"],
+        "operations": ["poll", "reconcile"],
+    }
+
+
+def test_refresh_endpoint_is_csrf_exempt_for_api_clients() -> None:
+    response = Client(enforce_csrf_checks=True).post("/api/v1/refresh", data={})
+
+    assert response.status_code == 202
+    assert response.json()["queued"] is True
+
+
+def test_refresh_endpoint_coalesces_repeated_requests() -> None:
+    first_response = Client().post("/api/v1/refresh", data={})
+    second_response = Client().post("/api/v1/refresh", data={})
+
+    assert first_response.status_code == 202
+    assert second_response.status_code == 202
+    assert first_response.json()["coalesced"] is False
+    assert second_response.json()["coalesced"] is True
+
+    # Coalesced response reflects the existing (first) request, not a new timestamp.
+    assert second_response.json()["requested_at"] == first_response.json()["requested_at"]
+    assert second_response.json()["operations"] == first_response.json()["operations"]
+
+    consumed_request = consume_runtime_refresh_request()
+    assert consumed_request is not None
+    assert consumed_request["requested_at"] == first_response.json()["requested_at"]
+
+
+def test_refresh_endpoint_rejects_get_with_405_error_envelope() -> None:
+    response = Client().get("/api/v1/refresh")
+
+    assert response.status_code == 405
+    assert response["Allow"] == "POST"
+    assert response.json() == {
+        "error": {
+            "code": "method_not_allowed",
+            "message": "Method 'GET' is not allowed for /api/v1/refresh.",
         }
     }
 
@@ -391,6 +453,28 @@ def test_runtime_snapshot_default_path_uses_shared_filename(
     assert path.suffix == Path(DEFAULT_RUNTIME_SNAPSHOT_FILENAME).suffix
 
 
+def test_runtime_refresh_request_default_path_uses_shared_filename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH", raising=False)
+
+    path = get_runtime_refresh_request_path()
+
+    assert path.parent == Path(tempfile.gettempdir())
+    assert path.name.startswith(f"{Path(DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME).stem}-")
+    assert path.suffix == Path(DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME).suffix
+
+
+def test_consume_runtime_refresh_request_returns_none_when_parent_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing_path = tmp_path / "missing" / "runtime-refresh.json"
+    monkeypatch.setenv("SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH", str(missing_path))
+
+    assert consume_runtime_refresh_request() is None
+
+
 def test_runtime_snapshot_default_path_is_namespaced_per_installation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -445,5 +529,12 @@ def test_publish_runtime_snapshot_wraps_invalid_path_errors(
 def _clear_snapshot_file_best_effort() -> None:
     try:
         clear_runtime_snapshot_file()
+    except RuntimeSnapshotUnavailableError:
+        pass
+
+
+def _clear_refresh_request_file_best_effort() -> None:
+    try:
+        clear_runtime_refresh_request_file()
     except RuntimeSnapshotUnavailableError:
         pass

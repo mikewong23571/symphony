@@ -13,12 +13,14 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, cast
 
-from .snapshots import parse_snapshot_timestamp, refresh_runtime_snapshot
+from .snapshots import isoformat_utc, parse_snapshot_timestamp, refresh_runtime_snapshot
 
 RUNTIME_SNAPSHOT_PATH_ENV_VAR = "SYMPHONY_RUNTIME_SNAPSHOT_PATH"
 RUNTIME_SNAPSHOT_MAX_AGE_SECONDS_ENV_VAR = "SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS"
+RUNTIME_REFRESH_REQUEST_PATH_ENV_VAR = "SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH"
 DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS = 120
 DEFAULT_RUNTIME_SNAPSHOT_FILENAME = "symphony-runtime-snapshot.json"
+DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME = "symphony-runtime-refresh-request.json"
 _RUNTIME_SNAPSHOT_SCOPE_MARKERS = ("pyproject.toml", ".git", "WORKFLOW.md")
 
 
@@ -55,13 +57,92 @@ def get_runtime_snapshot_path() -> Path:
     configured_path = os.environ.get(RUNTIME_SNAPSHOT_PATH_ENV_VAR, "").strip()
     if configured_path:
         return Path(configured_path).expanduser()
-    return _get_default_runtime_snapshot_path()
+    return _get_default_runtime_support_path(DEFAULT_RUNTIME_SNAPSHOT_FILENAME)
+
+
+def get_runtime_refresh_request_path() -> Path:
+    configured_path = os.environ.get(RUNTIME_REFRESH_REQUEST_PATH_ENV_VAR, "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return _get_default_runtime_support_path(DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME)
 
 
 def get_runtime_snapshot_refresh_interval_seconds(*, poll_interval_ms: int) -> float:
     max_age_seconds = _get_runtime_snapshot_max_age_seconds()
     poll_interval_seconds = max(poll_interval_ms / 1000, 0.5)
     return min(poll_interval_seconds, max_age_seconds / 2)
+
+
+def queue_runtime_refresh_request(*, requested_at: datetime | None = None) -> dict[str, Any]:
+    request_path = get_runtime_refresh_request_path()
+    requested_at_value = requested_at or datetime.now(UTC)
+    payload = {
+        "requested_at": isoformat_utc(requested_at_value),
+        "operations": ["poll", "reconcile"],
+    }
+    coalesced = False
+
+    active_request: dict[str, Any] = payload
+    try:
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        with _runtime_refresh_request_file_lock(request_path):
+            existing_request = _load_runtime_refresh_request_locked(request_path)
+            if existing_request is not None:
+                coalesced = True
+                active_request = existing_request
+            else:
+                request_path.unlink(missing_ok=True)
+                _replace_runtime_refresh_request_file(
+                    path=request_path,
+                    payload=json.dumps(payload, sort_keys=True),
+                )
+    except (OSError, TypeError, ValueError) as exc:
+        raise RuntimeSnapshotUnavailableError(
+            f"Runtime refresh request could not be written to {request_path}: {exc}."
+        ) from exc
+
+    return {
+        "queued": True,
+        "coalesced": coalesced,
+        "requested_at": active_request["requested_at"],
+        "operations": active_request["operations"],
+    }
+
+
+def consume_runtime_refresh_request() -> dict[str, Any] | None:
+    request_path = get_runtime_refresh_request_path()
+    if not request_path.exists() and not request_path.parent.exists():
+        return None
+
+    try:
+        with _runtime_refresh_request_file_lock(request_path):
+            payload = _load_runtime_refresh_request_locked(request_path)
+            if payload is None:
+                request_path.unlink(missing_ok=True)
+                return None
+            request_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeSnapshotUnavailableError(
+            f"Runtime refresh request could not be consumed from {request_path}: {exc}."
+        ) from exc
+
+    return payload
+
+
+def clear_runtime_refresh_request_file() -> bool:
+    request_path = get_runtime_refresh_request_path()
+    if not request_path.exists() and not request_path.parent.exists():
+        return False
+
+    try:
+        with _runtime_refresh_request_file_lock(request_path):
+            request_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeSnapshotUnavailableError(
+            f"Runtime refresh request could not be cleared: {exc}."
+        ) from exc
+
+    return True
 
 
 def publish_runtime_snapshot(
@@ -234,11 +315,11 @@ def _get_runtime_snapshot_max_age_seconds() -> int:
     return max(value, 1)
 
 
-def _get_default_runtime_snapshot_path() -> Path:
+def _get_default_runtime_support_path(filename: str) -> Path:
     scope_root = _resolve_runtime_snapshot_scope_root()
     scope_name = _sanitize_snapshot_scope_name(scope_root.name)
     scope_hash = sha256(str(scope_root).encode("utf-8")).hexdigest()[:12]
-    base_name = Path(DEFAULT_RUNTIME_SNAPSHOT_FILENAME)
+    base_name = Path(filename)
     scoped_name = f"{base_name.stem}-{scope_name}-{scope_hash}{base_name.suffix}"
     return Path(tempfile.gettempdir()) / scoped_name
 
@@ -365,6 +446,51 @@ def _get_runtime_snapshot_lock_path(path: Path) -> Path:
 @contextmanager
 def _runtime_snapshot_file_lock(path: Path) -> Iterator[None]:
     lock_path = _get_runtime_snapshot_lock_path(path)
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _load_runtime_refresh_request_locked(path: Path) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    requested_at = parse_snapshot_timestamp(payload.get("requested_at"))
+    if requested_at is None:
+        return None
+    if datetime.now(UTC) - requested_at > timedelta(
+        seconds=_get_runtime_snapshot_max_age_seconds()
+    ):
+        return None
+
+    operations = payload.get("operations")
+    if not isinstance(operations, list) or any(not isinstance(item, str) for item in operations):
+        return None
+
+    return cast(dict[str, Any], payload)
+
+
+def _replace_runtime_refresh_request_file(*, path: Path, payload: str) -> None:
+    _replace_runtime_snapshot_file(path=path, payload=payload)
+
+
+def _get_runtime_refresh_request_lock_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.lock")
+
+
+@contextmanager
+def _runtime_refresh_request_file_lock(path: Path) -> Iterator[None]:
+    lock_path = _get_runtime_refresh_request_lock_path(path)
     with lock_path.open("a+", encoding="utf-8") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:

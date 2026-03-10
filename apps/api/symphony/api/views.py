@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from django.http import HttpRequest, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 
 from symphony.observability.runtime import (
     RuntimeIssueNotFoundError,
     RuntimeSnapshotUnavailableError,
     get_runtime_issue_snapshot,
     get_runtime_snapshot,
+    queue_runtime_refresh_request,
 )
 
 ALLOWED_STATE_METHODS = "GET, HEAD"
 ALLOWED_ISSUE_METHODS = "GET, HEAD"
+ALLOWED_REFRESH_METHODS = "POST"
 
 
 def healthcheck(_request: HttpRequest) -> JsonResponse:
@@ -57,6 +60,27 @@ def runtime_issue(request: HttpRequest, issue_identifier: str) -> JsonResponse:
         return _error_response(code="timeout", message=str(exc), status=503)
 
     return JsonResponse(issue_snapshot)
+
+
+@csrf_exempt
+def runtime_refresh(request: HttpRequest) -> JsonResponse:
+    if request.method != "POST":
+        response = _error_response(
+            code="method_not_allowed",
+            message=f"Method {request.method!r} is not allowed for /api/v1/refresh.",
+            status=405,
+        )
+        response["Allow"] = ALLOWED_REFRESH_METHODS
+        return response
+
+    try:
+        refresh_request = queue_runtime_refresh_request()
+    except RuntimeSnapshotUnavailableError as exc:
+        return _error_response(code="unavailable", message=str(exc), status=503)
+    except TimeoutError as exc:
+        return _error_response(code="timeout", message=str(exc), status=503)
+
+    return JsonResponse(refresh_request, status=202)
 
 
 def _error_response(*, code: str, message: str, status: int) -> JsonResponse:

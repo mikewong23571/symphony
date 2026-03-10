@@ -20,6 +20,7 @@ from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     clear_runtime_snapshot_file,
     clear_runtime_snapshot_provider,
+    consume_runtime_refresh_request,
     get_runtime_snapshot_refresh_interval_seconds,
     publish_runtime_snapshot,
     register_runtime_snapshot_provider,
@@ -187,13 +188,7 @@ class Orchestrator:
         await self.startup()
         while not self._stop_event.is_set():
             await self.tick()
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self.state.poll_interval_ms / 1000,
-                )
-            except TimeoutError:
-                continue
+            await self._wait_for_next_cycle()
 
     async def aclose(self) -> None:
         self._stop_event.set()
@@ -775,6 +770,37 @@ class Orchestrator:
                 "Runtime snapshot file cleanup failed during orchestrator shutdown.",
                 exc_info=True,
             )
+
+    def _consume_runtime_refresh_request_best_effort(self) -> bool:
+        try:
+            return consume_runtime_refresh_request() is not None
+        except RuntimeSnapshotUnavailableError:
+            logger.warning(
+                "Runtime refresh request consumption failed; continuing with scheduled polling.",
+                exc_info=True,
+            )
+            return False
+
+    async def _wait_for_next_cycle(self) -> None:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (self.state.poll_interval_ms / 1000)
+        check_interval_seconds = min(max(self.state.poll_interval_ms / 1000, 0.25), 0.5)
+
+        while not self._stop_event.is_set():
+            if await asyncio.to_thread(self._consume_runtime_refresh_request_best_effort):
+                return
+
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=min(remaining, check_interval_seconds),
+                )
+            except TimeoutError:
+                continue
 
     def _build_runtime_snapshot(self, *, generated_at: datetime) -> dict[str, Any]:
         running_rows = [

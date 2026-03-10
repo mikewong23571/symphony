@@ -12,7 +12,9 @@ from symphony.agent_runner import AgentRuntimeEvent, AttemptResult
 from symphony.agent_runner.events import UsageSnapshot
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
+    get_runtime_refresh_request_path,
     get_runtime_snapshot_path,
+    queue_runtime_refresh_request,
 )
 from symphony.observability.snapshots import parse_snapshot_timestamp
 from symphony.orchestrator import Orchestrator
@@ -80,6 +82,7 @@ def build_config(
     tmp_path: Path,
     before_remove: str | None = None,
     stall_timeout_ms: int = 300_000,
+    poll_interval_ms: int = 60_000,
 ) -> ServiceConfig:
     return build_service_config(
         WorkflowDefinition(
@@ -92,6 +95,7 @@ def build_config(
                     "terminal_states": ["Done"],
                 },
                 "workspace": {"root": str(tmp_path / "workspaces")},
+                "polling": {"interval_ms": poll_interval_ms},
                 "agent": {"max_concurrent_agents": 2, "max_retry_backoff_ms": 120_000},
                 "codex": {
                     "command": "codex app-server",
@@ -997,6 +1001,30 @@ def test_orchestrator_heartbeat_refreshes_snapshot_while_worker_runs(
             assert second_generated_at > first_generated_at
             assert second_snapshot["counts"] == {"running": 1, "retrying": 0}
             assert second_snapshot["running"][0]["issue_id"] == issue.id
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_wait_cycle_consumes_refresh_requests_early(tmp_path: Path) -> None:
+    config = build_config(tmp_path=tmp_path, poll_interval_ms=5_000)
+    refresh_request_path = get_runtime_refresh_request_path()
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+
+            started_at = asyncio.get_running_loop().time()
+            wait_task = asyncio.create_task(orchestrator._wait_for_next_cycle())
+            await asyncio.sleep(0.05)
+            refresh_request = queue_runtime_refresh_request()
+            await asyncio.wait_for(wait_task, timeout=1.0)
+
+            assert refresh_request["queued"] is True
+            assert not refresh_request_path.exists()
+            assert asyncio.get_running_loop().time() - started_at < 1.0
         finally:
             await orchestrator.aclose()
 
