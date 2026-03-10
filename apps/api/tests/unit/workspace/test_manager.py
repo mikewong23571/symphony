@@ -47,6 +47,19 @@ def test_ensure_workspace_rejects_existing_file_at_workspace_path(tmp_path: Path
         manager.ensure_workspace("SYM-101")
 
 
+def test_remove_workspace_deletes_existing_file_path(tmp_path: Path) -> None:
+    root = tmp_path / "workspaces"
+    root.mkdir()
+    workspace_path = root / "SYM-101"
+    workspace_path.write_text("stale file", encoding="utf-8")
+    manager = WorkspaceManager(root)
+
+    removed = manager.remove_workspace("SYM-101")
+
+    assert removed is True
+    assert not workspace_path.exists()
+
+
 @pytest.mark.parametrize("issue_identifier", ["", "   ", ".", ".."])
 def test_resolve_workspace_path_rejects_degenerate_identifiers(issue_identifier: str) -> None:
     manager = WorkspaceManager(Path("/tmp/symphony-workspaces"))

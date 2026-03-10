@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,10 @@ class WorkspacePathCollisionError(WorkspaceError):
 
 class UnsafeWorkspacePathError(WorkspaceError):
     code = "unsafe_workspace_path"
+
+
+class WorkspaceRemoveError(WorkspaceError):
+    code = "workspace_remove_error"
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,6 +84,22 @@ class WorkspaceManager:
 
         workspace_path.mkdir()
         return Workspace(path=workspace_path, workspace_key=workspace_key, created_now=True)
+
+    def remove_workspace(self, issue_identifier: str) -> bool:
+        workspace_path = self.resolve_workspace_path(issue_identifier)
+        if not workspace_path.exists():
+            return False
+
+        try:
+            if workspace_path.is_dir():
+                shutil.rmtree(workspace_path)
+            else:
+                workspace_path.unlink()
+        except OSError as exc:
+            raise WorkspaceRemoveError(
+                f"Could not remove workspace path: {workspace_path}"
+            ) from exc
+        return True
 
     def _ensure_root_directory(self) -> Path:
         try:

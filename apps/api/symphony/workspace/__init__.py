@@ -5,6 +5,7 @@ from .manager import (
     WorkspaceError,
     WorkspaceManager,
     WorkspacePathCollisionError,
+    WorkspaceRemoveError,
     WorkspaceRootError,
     sanitize_issue_identifier,
 )
@@ -15,6 +16,7 @@ __all__ = [
     "Workspace",
     "WorkspaceError",
     "WorkspaceManager",
+    "WorkspaceRemoveError",
     "WorkspacePathCollisionError",
     "WorkspaceRootError",
     "sanitize_issue_identifier",

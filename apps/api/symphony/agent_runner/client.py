@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from symphony.common.types import ServiceInfo
+
+HANDSHAKE_REQUEST_COUNT = 3
+FIRST_RUNTIME_REQUEST_ID = HANDSHAKE_REQUEST_COUNT + 1
 
 
 class AppServerError(Exception):
@@ -36,8 +40,11 @@ class AppServerSession:
     thread_id: str
     turn_id: str
     session_id: str
+    # Requests 1-3 are reserved for initialize/thread-start/turn-start during the handshake.
+    next_request_id: int = FIRST_RUNTIME_REQUEST_ID
     stderr_lines: list[str] = field(default_factory=list)
     _stderr_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    _pending_messages: deque[Mapping[str, Any]] = field(default_factory=deque, repr=False)
 
     async def aclose(self) -> None:
         if self.process.returncode is None:
@@ -67,8 +74,6 @@ async def start_app_server_session(
     model: str | None = None,
 ) -> AppServerSession:
     workspace_cwd = workspace_path.resolve()
-    if not workspace_cwd.is_absolute():
-        raise AppServerStartupError("App-server workspace path must be absolute.")
 
     try:
         process = await asyncio.create_subprocess_exec(
@@ -84,6 +89,7 @@ async def start_app_server_session(
         raise AppServerStartupError("Could not start the Codex app-server subprocess.") from exc
 
     stderr_lines: list[str] = []
+    pending_messages: deque[Mapping[str, Any]] = deque()
     stderr_task = asyncio.create_task(_drain_stderr(process, stderr_lines))
 
     try:
@@ -101,7 +107,12 @@ async def start_app_server_session(
                 },
             },
         )
-        await _wait_for_response(process, expected_id=1, read_timeout_ms=read_timeout_ms)
+        await _wait_for_response(
+            process,
+            expected_id=1,
+            read_timeout_ms=read_timeout_ms,
+            pending_messages=pending_messages,
+        )
 
         await _send_message(process, {"method": "initialized", "params": {}})
 
@@ -125,6 +136,7 @@ async def start_app_server_session(
             process,
             expected_id=2,
             read_timeout_ms=read_timeout_ms,
+            pending_messages=pending_messages,
         )
         thread_id = _extract_required_id(thread_result, outer_key="thread")
 
@@ -147,6 +159,7 @@ async def start_app_server_session(
             process,
             expected_id=3,
             read_timeout_ms=read_timeout_ms,
+            pending_messages=pending_messages,
         )
         turn_id = _extract_required_id(turn_result, outer_key="turn")
     except Exception:
@@ -166,9 +179,82 @@ async def start_app_server_session(
         thread_id=thread_id,
         turn_id=turn_id,
         session_id=f"{thread_id}-{turn_id}",
+        next_request_id=FIRST_RUNTIME_REQUEST_ID,
         stderr_lines=stderr_lines,
         _stderr_task=stderr_task,
+        _pending_messages=pending_messages,
     )
+
+
+async def send_protocol_message(
+    session: AppServerSession,
+    message: Mapping[str, object],
+) -> None:
+    await _send_message(session.process, message)
+
+
+async def start_next_turn(
+    session: AppServerSession,
+    *,
+    prompt_text: str,
+    title: str,
+    approval_policy: str,
+    sandbox_policy: Mapping[str, Any],
+    cwd: Path,
+    read_timeout_ms: int,
+) -> str:
+    request_id = session.next_request_id
+    session.next_request_id += 1
+
+    await _send_message(
+        session.process,
+        {
+            "id": request_id,
+            "method": "turn/start",
+            "params": {
+                "threadId": session.thread_id,
+                "input": [{"type": "text", "text": prompt_text}],
+                "cwd": str(cwd.resolve()),
+                "title": title,
+                "approvalPolicy": approval_policy,
+                "sandboxPolicy": dict(sandbox_policy),
+            },
+        },
+    )
+    turn_result = await _wait_for_response(
+        session.process,
+        expected_id=request_id,
+        read_timeout_ms=read_timeout_ms,
+        pending_messages=session._pending_messages,
+    )
+    turn_id = _extract_required_id(turn_result, outer_key="turn")
+    session.turn_id = turn_id
+    session.session_id = f"{session.thread_id}-{turn_id}"
+    return turn_id
+
+
+async def read_protocol_message(
+    session: AppServerSession,
+    *,
+    timeout_seconds: float | None = None,
+) -> Mapping[str, Any]:
+    if session._pending_messages:
+        return session._pending_messages.popleft()
+
+    if session.process.stdout is None:
+        raise AppServerStartupError("App-server stdout is not available.")
+
+    if timeout_seconds is None:
+        line = await session.process.stdout.readline()
+    else:
+        # The streaming runner interprets raw TimeoutError as a turn/stall deadline, unlike the
+        # handshake path, which wraps request/response timeouts in AppServerResponseTimeoutError.
+        line = await asyncio.wait_for(session.process.stdout.readline(), timeout=timeout_seconds)
+
+    if not line:
+        raise AppServerProtocolError("App-server closed stdout before the turn completed.")
+
+    return _decode_message(line)
 
 
 async def _send_message(
@@ -188,6 +274,7 @@ async def _wait_for_response(
     *,
     expected_id: int,
     read_timeout_ms: int,
+    pending_messages: deque[Mapping[str, Any]] | None = None,
 ) -> Mapping[str, Any]:
     if process.stdout is None:
         raise AppServerStartupError("App-server stdout is not available.")
@@ -217,6 +304,8 @@ async def _wait_for_response(
         message = _decode_message(line)
         message_id = message.get("id")
         if message_id != expected_id:
+            if pending_messages is not None:
+                pending_messages.append(message)
             continue
 
         error = message.get("error")
