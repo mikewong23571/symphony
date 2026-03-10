@@ -160,6 +160,49 @@ def test_run_issue_attempt_runs_workspace_hooks(tmp_path: Path) -> None:
     assert (marker_dir / "after_run").is_file()
 
 
+def test_run_issue_attempt_uses_latest_hook_config_for_after_run(tmp_path: Path) -> None:
+    log_path = tmp_path / "messages.jsonl"
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    initial_config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=log_path,
+        hook_overrides={
+            "before_run": f"touch {marker_dir / 'before_run'}",
+            "after_run": f"touch {marker_dir / 'after_run_old'}",
+        },
+    )
+    updated_config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=log_path,
+        hook_overrides={
+            "before_run": f"touch {marker_dir / 'before_run_updated'}",
+            "after_run": f"touch {marker_dir / 'after_run_new'}",
+        },
+    )
+    tracker_client = FakeTrackerClient([build_issue(state="Done")])
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=initial_config,
+            config_provider=lambda: updated_config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=tracker_client,
+        )
+        assert result.status == "succeeded"
+
+    asyncio.run(run_test())
+
+    assert (marker_dir / "before_run").is_file()
+    assert not (marker_dir / "before_run_updated").exists()
+    assert not (marker_dir / "after_run_old").exists()
+    assert (marker_dir / "after_run_new").is_file()
+
+
 def test_run_issue_attempt_surfaces_before_run_hook_failures(tmp_path: Path) -> None:
     marker_path = tmp_path / "after_run"
     config = build_config(

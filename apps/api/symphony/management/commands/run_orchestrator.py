@@ -10,10 +10,7 @@ from symphony.orchestrator import Orchestrator
 from symphony.workflow import (
     WorkflowConfigError,
     WorkflowError,
-    build_service_config,
-    load_workflow_definition,
-    resolve_workflow_path,
-    validate_dispatch_config,
+    WorkflowRuntime,
 )
 
 if TYPE_CHECKING:
@@ -56,21 +53,18 @@ class Command(BaseCommand):
                 "port must be an integer greater than or equal to 0."
             )
 
-        resolved_path = resolve_workflow_path(workflow_path, cwd=Path.cwd())
-
+        workflow_runtime = WorkflowRuntime(workflow_path, cwd=Path.cwd(), env=os.environ)
         try:
-            definition = load_workflow_definition(workflow_path, cwd=Path.cwd())
-            config = build_service_config(definition, env=os.environ)
-            validate_dispatch_config(config)
+            config = workflow_runtime.load_initial()
         except (WorkflowError, WorkflowConfigError) as exc:
             raise CommandError(f"Startup failed ({exc.code}): {exc.message}") from exc
 
-        self.stdout.write(f"Loaded workflow definition from {resolved_path}")
+        self.stdout.write(f"Loaded workflow definition from {workflow_runtime.path}")
         http_port = cli_port if cli_port is not None else config.server.port
         http_server = self._start_http_server(port=http_port)
 
         async def run() -> None:
-            orchestrator = Orchestrator(config=config)
+            orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
             try:
                 if run_once:
                     await orchestrator.run_once()

@@ -87,6 +87,11 @@ class WorkspaceManager:
 
     def remove_workspace(self, issue_identifier: str) -> bool:
         workspace_path = self.resolve_workspace_path(issue_identifier)
+        return self.remove_workspace_path(workspace_path)
+
+    def remove_workspace_path(self, workspace_path: Path) -> bool:
+        workspace_path = workspace_path.resolve(strict=False)
+        _ensure_path_within_root(self.root, workspace_path)
         if not workspace_path.exists():
             return False
 

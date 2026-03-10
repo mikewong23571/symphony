@@ -27,6 +27,47 @@ state transitions rather than low-level Codex protocol uncertainty.
 
 ## Progress
 
+- [x] 2026-03-10 06:49Z: Identified dynamic `WORKFLOW.md` reload/re-apply as the next required
+  conformance gap from `docs/SPEC.md` Section 6.2 / 18.1. Confirmed that
+  `apps/api/symphony/management/commands/run_orchestrator.py` still loaded workflow/config only
+  once at startup and that `apps/api/symphony/orchestrator/core.py` held those values for the
+  lifetime of the process.
+- [x] 2026-03-10 06:49Z: Added `apps/api/symphony/workflow/runtime.py` as the workflow runtime
+  controller, wired `run_orchestrator` to boot from it, and taught
+  `apps/api/symphony/orchestrator/core.py` to defensively reload and re-apply workflow config
+  before startup/tick/retry dispatch while preserving the last known good config on invalid reload.
+- [x] 2026-03-10 06:49Z: Hardened workspace-root reload behavior by storing per-running-entry
+  workspace paths in `apps/api/symphony/orchestrator/core.py` and adding
+  `WorkspaceManager.remove_workspace_path(...)` in `apps/api/symphony/workspace/manager.py` so
+  cleanup/snapshots for in-flight runs continue to target the original workspace root after later
+  config changes.
+- [x] 2026-03-10 06:49Z: Added focused coverage in
+  `apps/api/tests/unit/workflow/test_runtime.py` plus dynamic reload scenarios in
+  `apps/api/tests/unit/orchestrator/test_core.py`, covering successful reload, invalid-reload
+  fallback, prompt/poll/workspace re-apply for future dispatches, and recovery after a broken
+  workflow file is fixed.
+- [x] 2026-03-10 06:49Z: Validated the touched backend surface with
+  `uv run ruff check apps/api/symphony/workflow apps/api/symphony/orchestrator apps/api/symphony/workspace apps/api/symphony/management/commands/run_orchestrator.py apps/api/tests/unit/workflow apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/management/test_run_orchestrator.py`,
+  `uv run mypy apps/api`, and
+  `uv run pytest apps/api/tests/unit/workflow apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/management/test_run_orchestrator.py -q`
+  (`62 passed in 2.56s`).
+- [x] 2026-03-10 06:49Z: Reran the repository quality gates after the reload slice:
+  `make lint`, `make typecheck`, and `make test`, ending at `164 passed in 11.77s` for backend
+  pytest and frontend vitest exiting `0` with `--passWithNoTests`.
+- [x] 2026-03-10 07:18Z: Closed the post-review gaps in the reload slice by adding a background
+  workflow watch loop plus reload listeners in `apps/api/symphony/workflow/runtime.py`, wiring the
+  orchestrator to apply watched updates immediately instead of waiting for the next tick, switching
+  `after_run` hook execution in `apps/api/symphony/agent_runner/harness.py` to read the latest live
+  config, and extending focused tests for watcher-driven reload plus invalid-retry requeueing.
+- [x] 2026-03-10 07:42Z: Tightened the watcher/retry lifecycle after follow-up review by removing
+  dead reload-control branches in `apps/api/symphony/orchestrator/core.py`, making the workflow
+  watch loop log-and-retry instead of silently exiting on unexpected exceptions, cleaning stale
+  retry workspaces when `workspace.root` changes during the wait window, adding a reuse-across-
+  orchestrator-lifecycles regression, and replacing the listener-removal fixed sleep with a watcher-
+  fired assertion.
+- [x] 2026-03-10 07:55Z: Reran the full repository quality gates after the final reload-lifecycle
+  fixes: `make lint`, `make typecheck`, and `make test` all passed, ending at `175 passed in
+  14.30s` for backend pytest and frontend vitest exiting `0` with `--passWithNoTests`.
 - [x] 2026-03-10 00:53Z: Confirmed the repository baseline against `docs/SPEC.md` and the current
   code. `apps/api/symphony/workflow/loader.py`, `apps/api/symphony/workflow/config.py`,
   `apps/api/symphony/tracker/linear.py`, `apps/api/symphony/tracker/linear_client.py`,
@@ -119,6 +160,31 @@ state transitions rather than low-level Codex protocol uncertainty.
 
 ## Surprises & Discoveries
 
+- Observation: Dynamic workspace-root reload is not just a future-dispatch concern. If the
+  orchestrator recomputes workspace paths from the latest root for already-running issues, runtime
+  snapshots and terminal cleanup can silently point at the wrong directory.
+  Evidence: Before the fix, `RunningEntry` stored only the issue identifier and
+  `_cleanup_workspace(...)` always resolved through the current `WorkspaceManager`, so a later
+  `workspace.root` change would redirect cleanup away from the original worker path.
+
+- Observation: A last-known-good fallback alone is not enough for invalid reload handling; new
+  dispatches also need an explicit gate or Symphony will continue launching fresh work from stale
+  policy after the operator has already broken `WORKFLOW.md`.
+  Evidence: `docs/SPEC.md` Section 6.2 requires preserving the last good config on invalid reload,
+  while Section 6.3 says workflow read/YAML errors block new dispatches until fixed.
+
+- Observation: “Watch the workflow file” and “re-check before dispatch” are two separate
+  requirements, not interchangeable approximations of the same thing.
+  Evidence: The review found that tick/retry-only reload logic still let prompt/concurrency/hook
+  changes sit stale for one full poll interval, while `docs/SPEC.md` Section 6.2 explicitly treats
+  defensive per-dispatch reload as a fallback in case filesystem watch events are missed.
+
+- Observation: Workspace-root reload can leak retry workspaces even when running-entry cleanup is
+  already correct.
+  Evidence: The follow-up review found that retry rows were immediately repointed at the new root,
+  so a failed attempt that had already created a workspace under the old root would never be
+  removed unless the reload path explicitly scheduled best-effort cleanup of the stale directory.
+
 - Observation: The typed config layer is ahead of the runtime. The defaults for
   `codex.turn_timeout_ms`, `codex.read_timeout_ms`, and `codex.stall_timeout_ms` already exist in
   `apps/api/symphony/workflow/config.py`, even though only the startup handshake currently consumes
@@ -177,6 +243,42 @@ state transitions rather than low-level Codex protocol uncertainty.
   `apps/api/symphony/api/views.py` marked those endpoints CSRF-exempt.
 
 ## Decision Log
+
+- Decision: Implement dynamic workflow reload as a repository-local runtime controller
+  (`apps/api/symphony/workflow/runtime.py`) instead of scattering file checks across the management
+  command and orchestrator methods.
+  Rationale: One controller can own the resolved workflow path, last-known-good definition/config,
+  change detection, and reload error state. That keeps startup and runtime reload semantics aligned
+  while preserving a small API for the orchestrator host.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Preserve the last known good config for reconciliation/runtime bookkeeping, but block
+  fresh dispatch/retry-dispatch when the latest workflow reload is invalid.
+  Rationale: This is the smallest implementation that satisfies both sides of the spec: the service
+  does not crash or lose its prior effective config, but it also does not continue launching new
+  work from stale policy after `WORKFLOW.md` becomes unreadable or invalid.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Store the concrete workspace path on each running entry and clean up by explicit path
+  when a run ends, rather than always re-deriving the workspace path from the current manager root.
+  Rationale: Reloaded `workspace.root` values should affect future runs, but must not retroactively
+  rewrite the location of already-running workspaces or their terminal cleanup path.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Add a small background watch thread inside `WorkflowRuntime` and use listener callbacks
+  to push live config/error updates into the orchestrator event loop.
+  Rationale: This satisfies the spec’s required on-change reload behavior without moving file-watch
+  logic into Django or the orchestrator poll loop, while the existing tick/retry reload path
+  remains as the defensive fallback if the watcher misses an update.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: When `workspace.root` changes, preserve the retry row’s original workspace path long
+  enough to schedule a best-effort cleanup task before repointing future retry work to the new
+  root.
+  Rationale: Future attempts should honor the latest root, but a workspace created by an earlier
+  failed attempt under the old root is still Symphony-owned state and should not be orphaned by the
+  reload transition.
+  Date/Author: 2026-03-10 / Codex
 
 - Decision: Rewrite `docs/EXEC_PLAN.md` as a living execution document centered on the current
   implementation frontier rather than keeping a generic milestone roadmap.
@@ -274,10 +376,28 @@ state transitions rather than low-level Codex protocol uncertainty.
 
 ## Outcomes & Retrospective
 
+- 2026-03-10: Extended the orchestrator from startup-only workflow loading to live workflow
+  re-application for future work. Symphony now notices `WORKFLOW.md` changes before startup/ticks
+  and retry dispatches, updates future prompt/config/workspace behavior without restart, and keeps
+  in-flight workers on their original settings.
+- 2026-03-10: Closed the most obvious post-core conformance gap from the spec. The remaining
+  follow-on work is no longer “can Symphony adapt to workflow changes at runtime?” but rather
+  product extensions such as richer observability/log surfaces, persistence across restarts, and
+  optional tracker-tooling extensions.
+- 2026-03-10: The dynamic reload slice uncovered a subtle correctness boundary around workspace
+  roots. Recording concrete workspace paths on running entries avoided a regression where runtime
+  snapshots or cleanup would drift to a newly configured root before the original worker finished.
 - 2026-03-10: Replaced the generic execution roadmap with a repository-state-aware ExecPlan. The
   immediate outcome is clarity: the next deliverable is no longer “more M2 work” in the abstract;
   it is a streamed agent runner that can terminate success, failure, timeout, and stall cases and
   feed a single-issue harness. The remaining gap is implementation, not planning.
+- 2026-03-10: Tightened the reload slice after review. Symphony now reacts to `WORKFLOW.md`
+  changes on a dedicated watch loop instead of only at tick boundaries, and long-running attempts
+  still pick up the latest `after_run` hook settings without forcing a session restart.
+- 2026-03-10: Closed the lifecycle edge cases around the watcher path. The repository now has
+  focused regressions for listener removal, shutdown fencing, and reuse of one `WorkflowRuntime`
+  across multiple orchestrator lifecycles, plus best-effort cleanup for stale retry workspaces
+  after a workspace-root reload.
 - 2026-03-10: Completed the planned critical path. The repository now has a normalized streamed
   agent runner, a single-issue worker harness, and a working orchestrator core with retry and
   reconciliation tests. Remaining work is no longer foundational execution plumbing; it is follow-on
@@ -681,3 +801,8 @@ orchestrator core that depends on them.
 Revision note (2026-03-10 01:53Z): updated this file after implementation. Reason: the critical
 path is now complete, so the plan needed to record the shipped modules, final validation commands,
 and the remaining boundary between foundational execution plumbing and later operational work.
+
+Revision note (2026-03-10 06:49Z): updated this file for the dynamic `WORKFLOW.md` reload slice.
+Reason: the next required conformance gap after the orchestrator/HTTP foundation was runtime
+workflow re-apply, including invalid reload fallback, future-dispatch gating, and workspace-root-
+safe cleanup for already-running sessions.

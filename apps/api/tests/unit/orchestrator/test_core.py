@@ -20,6 +20,7 @@ from symphony.observability.snapshots import parse_snapshot_timestamp
 from symphony.orchestrator import Orchestrator
 from symphony.orchestrator.core import CodexTotals, RunningEntry
 from symphony.tracker.models import Issue, IssueBlocker
+from symphony.workflow import WorkflowRuntime
 from symphony.workflow.config import ServiceConfig, build_service_config
 from symphony.workflow.loader import WorkflowDefinition
 from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
@@ -108,6 +109,41 @@ def build_config(
             prompt_template="Prompt body",
         )
     )
+
+
+def write_runtime_workflow(
+    path: Path,
+    *,
+    prompt_template: str = "Prompt body",
+    poll_interval_ms: int = 60_000,
+    max_concurrent_agents: int = 2,
+    workspace_root: Path | None = None,
+) -> Path:
+    root = workspace_root or (path.parent / "workspaces")
+    path.write_text(
+        (
+            "---\n"
+            "tracker:\n"
+            "  kind: linear\n"
+            "  api_key: linear-token\n"
+            "  project_slug: symphony\n"
+            "polling:\n"
+            f"  interval_ms: {poll_interval_ms}\n"
+            "agent:\n"
+            f"  max_concurrent_agents: {max_concurrent_agents}\n"
+            "workspace:\n"
+            f"  root: {root}\n"
+            "codex:\n"
+            "  command: codex app-server\n"
+            "  turn_timeout_ms: 1000\n"
+            "  read_timeout_ms: 1000\n"
+            "  stall_timeout_ms: 1000\n"
+            "---\n"
+            f"{prompt_template}\n"
+        ),
+        encoding="utf-8",
+    )
+    return path
 
 
 def test_orchestrator_dispatches_and_schedules_continuation_retry(tmp_path: Path) -> None:
@@ -349,6 +385,26 @@ async def _wait_for_retry_attempt(
         await asyncio.sleep(0.01)
 
 
+async def _wait_for_runtime_config(
+    orchestrator: Orchestrator,
+    *,
+    poll_interval_ms: int,
+    max_agents: int,
+) -> None:
+    while True:
+        if (
+            orchestrator.state.poll_interval_ms == poll_interval_ms
+            and orchestrator.state.max_concurrent_agents == max_agents
+        ):
+            return
+        await asyncio.sleep(0.01)
+
+
+async def _wait_for_path_absent(path: Path) -> None:
+    while path.exists():
+        await asyncio.sleep(0.01)
+
+
 def test_orchestrator_keeps_clean_continuation_retries_at_attempt_one(tmp_path: Path) -> None:
     issue = build_issue()
     tracker_client = FakeTrackerClient(candidate_batches=[[issue], [issue]])
@@ -389,6 +445,351 @@ def test_orchestrator_keeps_clean_continuation_retries_at_attempt_one(tmp_path: 
 
             assert attempts_seen == [None, 1]
             assert orchestrator.state.retry_attempts[issue.id].attempt == 1
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_applies_reloaded_config_to_future_dispatches(tmp_path: Path) -> None:
+    issue = build_issue()
+    done_issue = build_issue(state="Done")
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        prompt_template="Prompt body v1",
+        poll_interval_ms=60_000,
+        max_concurrent_agents=2,
+        workspace_root=tmp_path / "workspaces-a",
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+    tracker_client = FakeTrackerClient(candidate_batches=[[issue], [issue]])
+    prompts_seen: list[str] = []
+    poll_intervals_seen: list[int] = []
+    workspace_roots_seen: list[Path] = []
+
+    async def worker_runner(**kwargs: object) -> AttemptResult:
+        config = kwargs["config"]
+        workspace_manager = kwargs["workspace_manager"]
+        assert isinstance(config, ServiceConfig)
+        assert isinstance(workspace_manager, WorkspaceManager)
+        prompts_seen.append(config.prompt_template)
+        poll_intervals_seen.append(config.polling.interval_ms)
+        workspace_roots_seen.append(workspace_manager.root)
+        return AttemptResult(
+            status="succeeded",
+            issue=done_issue,
+            attempt=None,
+            workspace_path=workspace_manager.root / issue.identifier,
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            turns_run=1,
+            error_code=None,
+            message=None,
+        )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=tracker_client,
+            worker_runner=worker_runner,
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            write_runtime_workflow(
+                workflow_path,
+                prompt_template="Prompt body v2",
+                poll_interval_ms=1_234,
+                max_concurrent_agents=5,
+                workspace_root=tmp_path / "workspaces-b",
+            )
+
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            assert prompts_seen == ["Prompt body v1", "Prompt body v2"]
+            assert poll_intervals_seen == [60_000, 1_234]
+            assert workspace_roots_seen == [
+                (tmp_path / "workspaces-a").resolve(),
+                (tmp_path / "workspaces-b").resolve(),
+            ]
+            assert orchestrator.state.poll_interval_ms == 1_234
+            assert orchestrator.state.max_concurrent_agents == 5
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_applies_watched_reload_without_waiting_for_next_tick(tmp_path: Path) -> None:
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        poll_interval_ms=60_000,
+        max_concurrent_agents=2,
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.startup()
+
+            write_runtime_workflow(
+                workflow_path,
+                poll_interval_ms=1_234,
+                max_concurrent_agents=5,
+            )
+
+            await asyncio.wait_for(
+                _wait_for_runtime_config(orchestrator, poll_interval_ms=1_234, max_agents=5),
+                timeout=2.0,
+            )
+
+            assert orchestrator.state.poll_interval_ms == 1_234
+            assert orchestrator.state.max_concurrent_agents == 5
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_cleans_retry_workspace_when_root_changes(tmp_path: Path) -> None:
+    issue = build_issue()
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        workspace_root=tmp_path / "workspaces-a",
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+    old_workspace_path = config.workspace.root / issue.identifier
+    old_workspace_path.mkdir(parents=True)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.startup()
+            await orchestrator._schedule_retry(
+                issue_id=issue.id,
+                identifier=issue.identifier,
+                attempt=2,
+                delay_ms=60_000,
+                workspace_path=old_workspace_path,
+                error="initial retry",
+            )
+
+            write_runtime_workflow(
+                workflow_path,
+                workspace_root=tmp_path / "workspaces-b",
+            )
+
+            await asyncio.wait_for(
+                _wait_for_path_absent(old_workspace_path),
+                timeout=2.0,
+            )
+
+            retry_entry = orchestrator.state.retry_attempts[issue.id]
+            assert retry_entry.workspace_path == (tmp_path / "workspaces-b" / issue.identifier)
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_ignores_watcher_updates_after_shutdown_starts(tmp_path: Path) -> None:
+    workflow_path = write_runtime_workflow(tmp_path / "WORKFLOW.md", poll_interval_ms=60_000)
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.startup()
+            write_runtime_workflow(workflow_path, poll_interval_ms=1_234)
+            workflow_runtime.reload_if_changed()
+
+            refresh_calls: list[bool] = []
+
+            def record_refresh() -> None:
+                refresh_calls.append(True)
+
+            orchestrator._shutting_down = True
+            orchestrator._refresh_runtime_snapshot = record_refresh  # type: ignore[method-assign]
+
+            orchestrator._sync_workflow_runtime_state()
+
+            assert orchestrator.state.poll_interval_ms == 60_000
+            assert refresh_calls == []
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_workflow_runtime_reuse_across_orchestrator_lifecycles(tmp_path: Path) -> None:
+    workflow_path = write_runtime_workflow(tmp_path / "WORKFLOW.md", poll_interval_ms=60_000)
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+
+    async def run_test() -> None:
+        orchestrator_a = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        await orchestrator_a.startup()
+        assert len(workflow_runtime._reload_listeners) == 1
+        await orchestrator_a.aclose()
+        assert len(workflow_runtime._reload_listeners) == 0
+
+        orchestrator_b = Orchestrator(
+            config=workflow_runtime.config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator_b.startup()
+            assert len(workflow_runtime._reload_listeners) == 1
+
+            write_runtime_workflow(workflow_path, poll_interval_ms=1_234, max_concurrent_agents=5)
+
+            await asyncio.wait_for(
+                _wait_for_runtime_config(orchestrator_b, poll_interval_ms=1_234, max_agents=5),
+                timeout=2.0,
+            )
+
+            assert orchestrator_b.state.poll_interval_ms == 1_234
+            assert orchestrator_b.state.max_concurrent_agents == 5
+        finally:
+            await orchestrator_b.aclose()
+
+        assert len(workflow_runtime._reload_listeners) == 0
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(tmp_path: Path) -> None:
+    issue = build_issue()
+    done_issue = build_issue(state="Done")
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        prompt_template="Prompt body v1",
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+    tracker_client = FakeTrackerClient(candidate_batches=[[issue], [issue]])
+    prompts_seen: list[str] = []
+
+    async def worker_runner(**kwargs: object) -> AttemptResult:
+        config = kwargs["config"]
+        workspace_manager = kwargs["workspace_manager"]
+        assert isinstance(config, ServiceConfig)
+        assert isinstance(workspace_manager, WorkspaceManager)
+        prompts_seen.append(config.prompt_template)
+        return AttemptResult(
+            status="succeeded",
+            issue=done_issue,
+            attempt=None,
+            workspace_path=workspace_manager.root / issue.identifier,
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            turns_run=1,
+            error_code=None,
+            message=None,
+        )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=tracker_client,
+            worker_runner=worker_runner,
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            workflow_path.write_text(
+                "---\ntracker: [unterminated\n---\nPrompt body invalid\n",
+                encoding="utf-8",
+            )
+
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert prompts_seen == ["Prompt body v1"]
+            assert snapshot["workflow"]["last_error"]["code"] == "workflow_parse_error"
+
+            write_runtime_workflow(workflow_path, prompt_template="Prompt body v2")
+
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            recovered_snapshot = orchestrator.get_runtime_snapshot()
+            assert prompts_seen == ["Prompt body v1", "Prompt body v2"]
+            assert recovered_snapshot["workflow"]["last_error"] is None
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_requeues_retry_when_workflow_reload_is_invalid(tmp_path: Path) -> None:
+    issue = build_issue()
+    workflow_path = write_runtime_workflow(tmp_path / "WORKFLOW.md")
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+
+    async def worker_runner(**kwargs: object) -> AttemptResult:
+        raise AssertionError("worker should not be dispatched while workflow reload is invalid")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(candidate_batches=[[issue]]),
+            worker_runner=worker_runner,
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.startup()
+            workflow_path.write_text(
+                "---\ntracker: [unterminated\n---\nPrompt body invalid\n",
+                encoding="utf-8",
+            )
+
+            await orchestrator._schedule_retry(
+                issue_id=issue.id,
+                identifier=issue.identifier,
+                attempt=2,
+                delay_ms=60_000,
+                workspace_path=config.workspace.root / issue.identifier,
+                error="initial retry",
+            )
+            await orchestrator._dispatch_retry_issue(issue.id)
+
+            retry_entry = orchestrator.state.retry_attempts[issue.id]
+            assert retry_entry.attempt == 2
+            assert retry_entry.error is not None
+            assert "workflow_parse_error" in retry_entry.error
+            assert issue.id not in orchestrator.state.running
         finally:
             await orchestrator.aclose()
 
@@ -485,10 +886,10 @@ def test_orchestrator_startup_cleanup_ignores_workspace_remove_failures(
     config = build_config(tmp_path=tmp_path)
     workspace_manager = WorkspaceManager(config.workspace.root)
 
-    def fail_remove(self: WorkspaceManager, issue_identifier: str) -> bool:
-        raise WorkspaceRemoveError(f"cannot remove {issue_identifier}")
+    def fail_remove_path(self: WorkspaceManager, workspace_path: Path) -> bool:
+        raise WorkspaceRemoveError(f"cannot remove {workspace_path}")
 
-    monkeypatch.setattr(WorkspaceManager, "remove_workspace", fail_remove)
+    monkeypatch.setattr(WorkspaceManager, "remove_workspace_path", fail_remove_path)
 
     async def run_test() -> None:
         orchestrator = Orchestrator(
@@ -532,6 +933,7 @@ def test_orchestrator_warns_once_about_unknown_usage_semantics(tmp_path: Path) -
             attempt=None,
             worker_task=worker_task,
             monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / "SYM-123",
             started_at=datetime.now(UTC),
         )
 
@@ -582,6 +984,7 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
             attempt=None,
             worker_task=worker_task,
             monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
             started_at=started_at,
         )
         orchestrator.state.codex_totals = CodexTotals(
@@ -704,6 +1107,7 @@ def test_orchestrator_runtime_snapshot_tolerates_degenerate_workspace_identifier
             attempt=None,
             worker_task=worker_task,
             monitor_task=monitor_task,
+            workspace_path=config.workspace.root / running_issue.identifier,
             started_at=datetime.now(UTC),
         )
 
@@ -750,6 +1154,7 @@ def test_orchestrator_prefers_canonical_nested_rate_limit_payloads(tmp_path: Pat
             attempt=None,
             worker_task=worker_task,
             monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
             started_at=datetime.now(UTC),
         )
 
@@ -866,6 +1271,7 @@ def test_orchestrator_tolerates_runtime_snapshot_publish_failures(tmp_path: Path
                 attempt=None,
                 worker_task=worker_task,
                 monitor_task=monitor_task,
+                workspace_path=tmp_path / "workspaces" / "SYM-123",
                 started_at=datetime.now(UTC),
             )
 
@@ -942,6 +1348,7 @@ def test_orchestrator_shutdown_keeps_newer_snapshot_from_other_process(tmp_path:
                 attempt=None,
                 worker_task=worker_task,
                 monitor_task=monitor_task,
+                workspace_path=tmp_path / "workspaces" / "SYM-456",
                 started_at=datetime.now(UTC),
             )
             await orchestrator_b.startup()

@@ -48,6 +48,7 @@ async def run_issue_attempt(
     issue: Issue,
     attempt: int | None,
     config: ServiceConfig,
+    config_provider: Callable[[], ServiceConfig] | None = None,
     service_info: ServiceInfo,
     tracker_client: IssueStateRefresher,
     on_event: Callable[[AgentRuntimeEvent], Awaitable[None]] | None = None,
@@ -239,11 +240,15 @@ async def run_issue_attempt(
         if session is not None:
             await session.aclose()
         if after_run_needed and workspace is not None:
+            # `before_run` belongs to the dispatch-time config, but `after_run`
+            # is a future hook execution and should observe the latest live
+            # workflow settings if they changed mid-run.
+            active_config = config_provider() if config_provider is not None else config
             await run_hook_best_effort(
                 name="after_run",
-                script=config.hooks.after_run,
+                script=active_config.hooks.after_run,
                 cwd=workspace.path,
-                timeout_ms=config.hooks.timeout_ms,
+                timeout_ms=active_config.hooks.timeout_ms,
             )
 
 

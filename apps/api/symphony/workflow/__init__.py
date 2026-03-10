@@ -26,6 +26,7 @@ from .loader import (
     parse_workflow_definition,
     resolve_workflow_path,
 )
+from .runtime import WorkflowReloadError, WorkflowRuntime, WorkflowRuntimeStatus
 
 __all__ = [
     "MissingWorkflowFileError",
@@ -39,6 +40,9 @@ __all__ = [
     "WorkflowError",
     "WorkflowFrontMatterNotAMapError",
     "WorkflowParseError",
+    "WorkflowReloadError",
+    "WorkflowRuntime",
+    "WorkflowRuntimeStatus",
     "DEFAULT_ACTIVE_STATES",
     "DEFAULT_CODEX_COMMAND",
     "DEFAULT_HOOK_TIMEOUT_MS",

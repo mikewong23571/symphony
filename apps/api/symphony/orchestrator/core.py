@@ -27,7 +27,7 @@ from symphony.observability.runtime import (
 )
 from symphony.observability.snapshots import isoformat_utc, refresh_runtime_snapshot
 from symphony.tracker import Issue, LinearTrackerClient
-from symphony.workflow import ServiceConfig, validate_dispatch_config
+from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
 from symphony.workspace import WorkspaceError, WorkspaceManager
 from symphony.workspace.hooks import run_hook_best_effort
 
@@ -51,6 +51,7 @@ class WorkerRunner(Protocol):
         issue: Issue,
         attempt: int | None,
         config: ServiceConfig,
+        config_provider: Callable[[], ServiceConfig] | None,
         service_info: ServiceInfo,
         tracker_client: TrackerClientProtocol,
         on_event: Callable[[AgentRuntimeEvent], Awaitable[None]] | None,
@@ -64,6 +65,7 @@ class RetryEntry:
     identifier: str
     attempt: int
     due_at: datetime
+    workspace_path: Path
     timer_handle: asyncio.Task[None] | None
     error: str | None
 
@@ -74,6 +76,7 @@ class RunningEntry:
     attempt: int | None
     worker_task: asyncio.Task[AttemptResult]
     monitor_task: asyncio.Task[None]
+    workspace_path: Path
     started_at: datetime
     turn_count: int = 0
     seen_turn_ids: set[str] = field(default_factory=set)
@@ -106,6 +109,7 @@ class RetrySchedule:
     identifier: str
     attempt: int
     delay_ms: int
+    workspace_path: Path
     error: str | None
 
 
@@ -130,8 +134,12 @@ class Orchestrator:
         worker_runner: WorkerRunner = run_issue_attempt,
         workspace_manager: WorkspaceManager | None = None,
         service_info: ServiceInfo | None = None,
+        workflow_runtime: WorkflowRuntime | None = None,
     ) -> None:
         self.config = config
+        self._workflow_runtime = workflow_runtime
+        self._owns_tracker_client = tracker_client is None
+        self._owns_workspace_manager = workspace_manager is None
         self.tracker_client = tracker_client or LinearTrackerClient(config.tracker)
         self.worker_runner = worker_runner
         self.workspace_manager = workspace_manager or WorkspaceManager(config.workspace.root)
@@ -143,8 +151,13 @@ class Orchestrator:
         self._lock = asyncio.Lock()
         self._stop_event = asyncio.Event()
         self._started = False
+        self._shutting_down = False
         self._cancel_reasons: dict[str, str] = {}
         self._usage_semantics_warned = False
+        self._last_workflow_reload_error_at: datetime | None = None
+        self._workflow_listener_registered = False
+        self._workflow_event_loop: asyncio.AbstractEventLoop | None = None
+        self._background_cleanup_tasks: set[asyncio.Task[None]] = set()
         self._runtime_snapshot_lock = threading.Lock()
         self._runtime_snapshot_task: asyncio.Task[None] | None = None
         self._runtime_snapshot_owner_token = uuid4().hex
@@ -155,8 +168,17 @@ class Orchestrator:
     async def startup(self) -> None:
         if self._started:
             return
-        validate_dispatch_config(self.config)
+        self._shutting_down = False
+        await self._reload_workflow_config_if_needed()
+        if self._workflow_runtime is None:
+            validate_dispatch_config(self.config)
         await self._startup_terminal_workspace_cleanup()
+        if self._workflow_runtime is not None:
+            self._workflow_event_loop = asyncio.get_running_loop()
+            if not self._workflow_listener_registered:
+                self._workflow_runtime.add_reload_listener(self._handle_workflow_runtime_signal)
+                self._workflow_listener_registered = True
+            self._workflow_runtime.start_watching()
         self._started = True
         register_runtime_snapshot_provider(self)
         self._runtime_snapshot_task = asyncio.create_task(self._run_runtime_snapshot_heartbeat())
@@ -191,6 +213,7 @@ class Orchestrator:
             await self._wait_for_next_cycle()
 
     async def aclose(self) -> None:
+        self._shutting_down = True
         self._stop_event.set()
 
         retry_entries = list(self.state.retry_attempts.values())
@@ -208,17 +231,27 @@ class Orchestrator:
         background_tasks = []
         if self._runtime_snapshot_task is not None:
             background_tasks.append(self._runtime_snapshot_task)
+        background_tasks.extend(self._background_cleanup_tasks)
         monitor_tasks = [entry.monitor_task for entry in running_entries]
         if background_tasks or monitor_tasks:
             await asyncio.gather(*background_tasks, *monitor_tasks, return_exceptions=True)
 
         clear_runtime_snapshot_provider(self)
         self._clear_runtime_snapshot_file_best_effort()
+        if self._workflow_runtime is not None:
+            if self._workflow_listener_registered:
+                self._workflow_runtime.remove_reload_listener(self._handle_workflow_runtime_signal)
+                self._workflow_listener_registered = False
+            self._workflow_runtime.stop_watching()
+        self._workflow_event_loop = None
 
     async def tick(self) -> None:
         dispatched_any = False
         try:
+            await self._reload_workflow_config_if_needed()
             await self.reconcile_running_issues()
+            if self._workflow_runtime_has_error():
+                return
 
             validate_dispatch_config(self.config)
             candidate_issues = await asyncio.to_thread(self.tracker_client.fetch_candidate_issues)
@@ -331,6 +364,8 @@ class Orchestrator:
                 continue
 
     async def _dispatch_issue(self, issue: Issue, *, attempt: int | None) -> None:
+        workspace_path = _best_effort_workspace_path(self.workspace_manager, issue.identifier)
+
         async def on_event(event: AgentRuntimeEvent) -> None:
             await self._handle_worker_event(issue.id, event)
 
@@ -338,19 +373,23 @@ class Orchestrator:
             issue=issue,
             attempt=attempt,
             config=self.config,
+            config_provider=self._get_live_config,
             service_info=self.service_info,
             tracker_client=self.tracker_client,
             on_event=on_event,
             workspace_manager=self.workspace_manager,
         )
         worker_task: asyncio.Task[AttemptResult] = asyncio.create_task(worker_coro)
-        monitor_task = asyncio.create_task(self._monitor_worker(issue, attempt, worker_task))
+        monitor_task = asyncio.create_task(
+            self._monitor_worker(issue, attempt, workspace_path, worker_task)
+        )
 
         self.state.running[issue.id] = RunningEntry(
             issue=issue,
             attempt=attempt,
             worker_task=worker_task,
             monitor_task=monitor_task,
+            workspace_path=workspace_path,
             started_at=datetime.now(UTC),
         )
         self.state.claimed.add(issue.id)
@@ -362,6 +401,7 @@ class Orchestrator:
         self,
         issue: Issue,
         attempt: int | None,
+        workspace_path: Path,
         worker_task: asyncio.Task[AttemptResult],
     ) -> None:
         try:
@@ -372,7 +412,7 @@ class Orchestrator:
                 status=status,
                 issue=issue,
                 attempt=attempt,
-                workspace_path=self.workspace_manager.resolve_workspace_path(issue.identifier),
+                workspace_path=workspace_path,
                 session_id=None,
                 thread_id=None,
                 turn_id=None,
@@ -385,7 +425,7 @@ class Orchestrator:
                 status="failed",
                 issue=issue,
                 attempt=attempt,
-                workspace_path=self.workspace_manager.resolve_workspace_path(issue.identifier),
+                workspace_path=workspace_path,
                 session_id=None,
                 thread_id=None,
                 turn_id=None,
@@ -448,6 +488,7 @@ class Orchestrator:
 
     async def _handle_worker_exit(self, issue_id: str, result: AttemptResult) -> None:
         cleanup_identifier: str | None = None
+        cleanup_workspace_path: Path | None = None
         retry_schedule: RetrySchedule | None = None
         snapshot_needs_refresh = False
 
@@ -468,6 +509,7 @@ class Orchestrator:
                 if self._is_terminal_state(result.issue.state):
                     self.state.claimed.discard(issue_id)
                     cleanup_identifier = result.issue.identifier
+                    cleanup_workspace_path = result.workspace_path
                 elif not self._is_active_state(result.issue.state):
                     self.state.claimed.discard(issue_id)
                 else:
@@ -476,6 +518,7 @@ class Orchestrator:
                         identifier=result.issue.identifier,
                         attempt=1,
                         delay_ms=CONTINUATION_RETRY_DELAY_MS,
+                        workspace_path=result.workspace_path,
                         error=None,
                     )
             elif result.status == "canceled_by_reconciliation":
@@ -487,6 +530,7 @@ class Orchestrator:
                     identifier=result.issue.identifier,
                     attempt=next_attempt,
                     delay_ms=self._compute_failure_retry_delay(next_attempt),
+                    workspace_path=result.workspace_path,
                     error=result.error_code or result.message,
                 )
 
@@ -496,7 +540,10 @@ class Orchestrator:
             self._refresh_runtime_snapshot()
 
         if cleanup_identifier is not None:
-            await self._cleanup_workspace(cleanup_identifier)
+            await self._cleanup_workspace(
+                issue_identifier=cleanup_identifier,
+                workspace_path=cleanup_workspace_path,
+            )
             return
 
         if retry_schedule is not None:
@@ -515,6 +562,7 @@ class Orchestrator:
         identifier: str,
         attempt: int,
         delay_ms: int,
+        workspace_path: Path | None = None,
         error: str | None,
         refresh_snapshot: bool = True,
     ) -> None:
@@ -534,6 +582,8 @@ class Orchestrator:
             identifier=identifier,
             attempt=attempt,
             due_at=due_at,
+            workspace_path=workspace_path
+            or _best_effort_workspace_path(self.workspace_manager, identifier),
             timer_handle=timer_handle,
             error=error,
         )
@@ -549,9 +599,20 @@ class Orchestrator:
             return
 
     async def _dispatch_retry_issue(self, issue_id: str) -> None:
+        await self._reload_workflow_config_if_needed()
         async with self._lock:
             retry_entry = self.state.retry_attempts.get(issue_id)
         if retry_entry is None:
+            return
+        if self._workflow_runtime_has_error():
+            await self._schedule_retry(
+                issue_id=issue_id,
+                identifier=retry_entry.identifier,
+                attempt=retry_entry.attempt,
+                delay_ms=self.state.poll_interval_ms,
+                workspace_path=retry_entry.workspace_path,
+                error=self._workflow_runtime_error_message(),
+            )
             return
 
         try:
@@ -563,6 +624,7 @@ class Orchestrator:
                 identifier=retry_entry.identifier,
                 attempt=next_attempt,
                 delay_ms=self._compute_failure_retry_delay(next_attempt),
+                workspace_path=retry_entry.workspace_path,
                 error="retry poll failed",
             )
             return
@@ -590,6 +652,7 @@ class Orchestrator:
                     identifier=issue.identifier,
                     attempt=retry_entry.attempt,
                     delay_ms=CONTINUATION_RETRY_DELAY_MS,
+                    workspace_path=retry_entry.workspace_path,
                     error="no available orchestrator slots",
                     refresh_snapshot=False,
                 )
@@ -617,6 +680,7 @@ class Orchestrator:
         reason: str,
         cleanup_workspace: bool,
     ) -> None:
+        workspace_path: Path | None = None
         async with self._lock:
             running_entry = self.state.running.get(issue_id)
             if running_entry is None:
@@ -625,23 +689,50 @@ class Orchestrator:
             running_entry.worker_task.cancel()
             issue_identifier = running_entry.issue.identifier
             monitor_task = running_entry.monitor_task
+            workspace_path = running_entry.workspace_path
 
         await asyncio.gather(monitor_task, return_exceptions=True)
 
         if cleanup_workspace:
-            await self._cleanup_workspace(issue_identifier)
+            await self._cleanup_workspace(
+                issue_identifier=issue_identifier,
+                workspace_path=workspace_path,
+            )
 
-    async def _cleanup_workspace(self, issue_identifier: str) -> None:
+    async def _cleanup_workspace(
+        self,
+        issue_identifier: str,
+        workspace_path: Path | None = None,
+    ) -> None:
+        manager = self.workspace_manager
+        if workspace_path is not None and workspace_path.parent != manager.root:
+            manager = WorkspaceManager(workspace_path.parent)
+        await self._cleanup_workspace_from_manager(
+            issue_identifier=issue_identifier,
+            workspace_path=workspace_path,
+            manager=manager,
+        )
+
+    async def _cleanup_workspace_from_manager(
+        self,
+        *,
+        issue_identifier: str,
+        workspace_path: Path | None,
+        manager: WorkspaceManager,
+    ) -> None:
         try:
-            workspace_path = self.workspace_manager.resolve_workspace_path(issue_identifier)
-            if workspace_path.is_dir():
+            cleanup_path = workspace_path
+            if cleanup_path is None:
+                cleanup_path = manager.resolve_workspace_path(issue_identifier)
+
+            if cleanup_path.is_dir():
                 await run_hook_best_effort(
                     name="before_remove",
                     script=self.config.hooks.before_remove,
-                    cwd=workspace_path,
+                    cwd=cleanup_path,
                     timeout_ms=self.config.hooks.timeout_ms,
                 )
-            self.workspace_manager.remove_workspace(issue_identifier)
+            manager.remove_workspace_path(cleanup_path)
         except (OSError, WorkspaceError) as exc:
             logger.warning(
                 "Workspace cleanup failed for %s: %s",
@@ -781,6 +872,48 @@ class Orchestrator:
             )
             return False
 
+    async def _reload_workflow_config_if_needed(self) -> None:
+        if self._workflow_runtime is None:
+            return
+
+        await asyncio.to_thread(self._workflow_runtime.reload_if_changed)
+        self._sync_workflow_runtime_state(refresh_snapshot=False)
+
+    def _apply_runtime_config(self, config: ServiceConfig) -> None:
+        previous_config = self.config
+        self.config = config
+        self.state.poll_interval_ms = config.polling.interval_ms
+        self.state.max_concurrent_agents = config.agent.max_concurrent_agents
+
+        if self._owns_tracker_client and config.tracker != previous_config.tracker:
+            self.tracker_client = LinearTrackerClient(config.tracker)
+        if self._owns_workspace_manager and config.workspace.root != previous_config.workspace.root:
+            previous_manager = self.workspace_manager
+            self.workspace_manager = WorkspaceManager(config.workspace.root)
+            for retry_entry in self.state.retry_attempts.values():
+                previous_workspace_path = retry_entry.workspace_path
+                next_workspace_path = _best_effort_workspace_path(
+                    self.workspace_manager,
+                    retry_entry.identifier,
+                )
+                if previous_workspace_path != next_workspace_path:
+                    self._schedule_retry_workspace_cleanup(
+                        issue_identifier=retry_entry.identifier,
+                        workspace_path=previous_workspace_path,
+                        manager=previous_manager,
+                    )
+                retry_entry.workspace_path = next_workspace_path
+
+    def _workflow_runtime_has_error(self) -> bool:
+        return self._workflow_runtime is not None and self._workflow_runtime.last_error is not None
+
+    def _workflow_runtime_error_message(self) -> str:
+        assert self._workflow_runtime is not None
+        assert self._workflow_runtime.last_error is not None
+        return (
+            f"{self._workflow_runtime.last_error.code}: {self._workflow_runtime.last_error.message}"
+        )
+
     async def _wait_for_next_cycle(self) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + (self.state.poll_interval_ms / 1000)
@@ -815,9 +948,7 @@ class Orchestrator:
                 "last_message": entry.last_codex_message or "",
                 "started_at": isoformat_utc(entry.started_at),
                 "last_event_at": isoformat_utc(entry.last_codex_timestamp),
-                "workspace_path": str(
-                    _best_effort_workspace_path(self.workspace_manager, entry.issue.identifier)
-                ),
+                "workspace_path": str(entry.workspace_path),
                 "tokens": {
                     "input_tokens": entry.codex_input_tokens,
                     "output_tokens": entry.codex_output_tokens,
@@ -837,9 +968,7 @@ class Orchestrator:
                 "attempt": entry.attempt,
                 "due_at": isoformat_utc(entry.due_at),
                 "error": entry.error,
-                "workspace_path": str(
-                    _best_effort_workspace_path(self.workspace_manager, entry.identifier)
-                ),
+                "workspace_path": str(entry.workspace_path),
             }
             for entry in sorted(
                 self.state.retry_attempts.values(),
@@ -878,7 +1007,63 @@ class Orchestrator:
                 ),
             },
             "rate_limits": copy.deepcopy(self.state.codex_rate_limits),
+            "workflow": _workflow_runtime_snapshot(self._workflow_runtime),
         }
+
+    def _get_live_config(self) -> ServiceConfig:
+        return self.config
+
+    def _handle_workflow_runtime_signal(self) -> None:
+        if self._shutting_down:
+            return
+        loop = self._workflow_event_loop
+        if loop is None:
+            return
+        loop.call_soon_threadsafe(self._sync_workflow_runtime_state)
+
+    def _sync_workflow_runtime_state(self, *, refresh_snapshot: bool = True) -> None:
+        if self._shutting_down:
+            return
+        if self._workflow_runtime is None:
+            return
+
+        reload_error = self._workflow_runtime.last_error
+        if reload_error is not None:
+            if reload_error.observed_at != self._last_workflow_reload_error_at:
+                logger.warning(
+                    "Workflow reload failed; keeping last known good config. code=%s message=%s",
+                    reload_error.code,
+                    reload_error.message,
+                )
+                self._last_workflow_reload_error_at = reload_error.observed_at
+            if refresh_snapshot:
+                self._refresh_runtime_snapshot()
+            return
+
+        self._apply_runtime_config(self._workflow_runtime.config)
+        self._last_workflow_reload_error_at = None
+        if refresh_snapshot:
+            self._refresh_runtime_snapshot()
+
+    def _schedule_retry_workspace_cleanup(
+        self,
+        *,
+        issue_identifier: str,
+        workspace_path: Path,
+        manager: WorkspaceManager,
+    ) -> None:
+        if self._shutting_down:
+            return
+
+        cleanup_task = asyncio.create_task(
+            self._cleanup_workspace_from_manager(
+                issue_identifier=issue_identifier,
+                workspace_path=workspace_path,
+                manager=manager,
+            )
+        )
+        self._background_cleanup_tasks.add(cleanup_task)
+        cleanup_task.add_done_callback(self._background_cleanup_tasks.discard)
 
 
 def _best_effort_workspace_path(manager: WorkspaceManager, issue_identifier: str) -> Path:
@@ -932,3 +1117,24 @@ def _jsonify_value(value: Any) -> Any:
     if value is None or isinstance(value, str | int | float | bool):
         return value
     return str(value)
+
+
+def _workflow_runtime_snapshot(workflow_runtime: WorkflowRuntime | None) -> dict[str, Any] | None:
+    if workflow_runtime is None:
+        return None
+
+    status = workflow_runtime.get_status()
+    last_error = None
+    if status.last_error is not None:
+        last_error = {
+            "code": status.last_error.code,
+            "message": status.last_error.message,
+            "observed_at": isoformat_utc(status.last_error.observed_at),
+        }
+
+    return {
+        "path": str(status.path),
+        "loaded_at": isoformat_utc(status.loaded_at),
+        "last_checked_at": isoformat_utc(status.last_checked_at),
+        "last_error": last_error,
+    }
