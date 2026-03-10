@@ -1,11 +1,7 @@
-from django.http import HttpRequest, JsonResponse
 from django.urls import path
-
-
-def healthcheck(_request: HttpRequest) -> JsonResponse:
-    return JsonResponse({"status": "ok", "service": "symphony-api"})
-
+from symphony.api.views import healthcheck, runtime_state
 
 urlpatterns = [
     path("healthz", healthcheck, name="healthcheck"),
+    path("api/v1/state", runtime_state, name="runtime-state"),
 ]

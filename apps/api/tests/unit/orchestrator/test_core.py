@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import warnings
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from symphony.agent_runner import AgentRuntimeEvent, AttemptResult
 from symphony.agent_runner.events import UsageSnapshot
+from symphony.observability.runtime import (
+    RuntimeSnapshotUnavailableError,
+    get_runtime_snapshot_path,
+)
+from symphony.observability.snapshots import parse_snapshot_timestamp
 from symphony.orchestrator import Orchestrator
-from symphony.orchestrator.core import RunningEntry
+from symphony.orchestrator.core import CodexTotals, RunningEntry
 from symphony.tracker.models import Issue, IssueBlocker
 from symphony.workflow.config import ServiceConfig, build_service_config
 from symphony.workflow.loader import WorkflowDefinition
@@ -545,5 +551,400 @@ def test_orchestrator_warns_once_about_unknown_usage_semantics(tmp_path: Path) -
 
         await asyncio.gather(worker_task, monitor_task)
         await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_limits(
+    tmp_path: Path,
+) -> None:
+    issue = build_issue()
+    retry_issue = build_issue(issue_id="issue-2", identifier="SYM-124")
+    config = build_config(tmp_path=tmp_path)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        started_at = datetime.now(UTC) - timedelta(seconds=5)
+
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            started_at=started_at,
+        )
+        orchestrator.state.codex_totals = CodexTotals(
+            input_tokens=100,
+            output_tokens=50,
+            total_tokens=150,
+            seconds_running=12.5,
+        )
+
+        event = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            codex_app_server_pid=123,
+            usage=UsageSnapshot(input_tokens=10, output_tokens=5, total_tokens=15),
+            payload={
+                "phase": "turn_started",
+                "rate_limits": {"requests_remaining": 7, "tokens_remaining": 900},
+            },
+        )
+        second_event_same_turn = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            codex_app_server_pid=123,
+            usage=None,
+            payload={"phase": "still_turn_1"},
+        )
+        third_event_next_turn = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_2",
+            thread_id="thr_123",
+            turn_id="turn_2",
+            codex_app_server_pid=123,
+            usage=None,
+            payload={"phase": "turn_2_started"},
+        )
+
+        try:
+            with pytest.warns(RuntimeWarning, match="cumulative snapshots"):
+                await orchestrator._handle_worker_event(issue.id, event)
+            await orchestrator._handle_worker_event(issue.id, second_event_same_turn)
+            await orchestrator._handle_worker_event(issue.id, third_event_next_turn)
+            await orchestrator._schedule_retry(
+                issue_id=retry_issue.id,
+                identifier=retry_issue.identifier,
+                attempt=3,
+                delay_ms=30_000,
+                error="no available orchestrator slots",
+            )
+
+            snapshot = orchestrator.get_runtime_snapshot()
+
+            assert snapshot["counts"] == {"running": 1, "retrying": 1}
+            assert snapshot["rate_limits"] == {
+                "requests_remaining": 7,
+                "tokens_remaining": 900,
+            }
+
+            running_row = snapshot["running"][0]
+            assert running_row["issue_id"] == issue.id
+            assert running_row["issue_identifier"] == issue.identifier
+            assert running_row["state"] == issue.state
+            assert running_row["session_id"] == "thr_123-turn_2"
+            assert running_row["turn_count"] == 2
+            assert running_row["last_event"] == "notification"
+            assert running_row["tokens"] == {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            }
+            assert isinstance(running_row["started_at"], str)
+            assert isinstance(running_row["last_event_at"], str)
+
+            retry_row = snapshot["retrying"][0]
+            assert retry_row["issue_id"] == retry_issue.id
+            assert retry_row["issue_identifier"] == retry_issue.identifier
+            assert retry_row["attempt"] == 3
+            assert retry_row["error"] == "no available orchestrator slots"
+            assert isinstance(retry_row["due_at"], str)
+
+            codex_totals = snapshot["codex_totals"]
+            assert codex_totals["input_tokens"] == 110
+            assert codex_totals["output_tokens"] == 55
+            assert codex_totals["total_tokens"] == 165
+            assert 17.5 <= codex_totals["seconds_running"] <= 18.5
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_prefers_canonical_nested_rate_limit_payloads(tmp_path: Path) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            started_at=datetime.now(UTC),
+        )
+
+        event = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            codex_app_server_pid=123,
+            usage=None,
+            payload={
+                "rateLimit": {"requests_remaining": 1},
+                "params": {"rate_limits": {"requests_remaining": 7}},
+            },
+        )
+
+        try:
+            await orchestrator._handle_worker_event(issue.id, event)
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["rate_limits"] == {"requests_remaining": 7}
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_publishes_runtime_snapshot_for_other_processes(tmp_path: Path) -> None:
+    config = build_config(tmp_path=tmp_path)
+    snapshot_path = get_runtime_snapshot_path()
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+
+            assert snapshot_path.is_file()
+            published_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            assert published_snapshot["counts"] == {"running": 0, "retrying": 0}
+        finally:
+            await orchestrator.aclose()
+
+        assert not snapshot_path.exists()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_refreshes_runtime_snapshot_immediately_after_dispatch(tmp_path: Path) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path)
+    tracker_client = FakeTrackerClient(candidate_batches=[[issue]])
+    snapshot_path = get_runtime_snapshot_path()
+
+    async def pending_worker_runner(**kwargs: object) -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=tracker_client,
+            worker_runner=pending_worker_runner,
+        )
+        try:
+            await orchestrator.run_once()
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["counts"] == {"running": 1, "retrying": 0}
+            assert snapshot["running"][0]["issue_id"] == issue.id
+
+            published_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            assert published_snapshot["counts"] == {"running": 1, "retrying": 0}
+            assert published_snapshot["running"][0]["issue_id"] == issue.id
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_tolerates_runtime_snapshot_publish_failures(tmp_path: Path) -> None:
+    config = build_config(tmp_path=tmp_path)
+
+    async def done_result() -> AttemptResult:
+        return AttemptResult(
+            status="succeeded",
+            issue=build_issue(),
+            attempt=None,
+            workspace_path=tmp_path / "workspaces" / "SYM-123",
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            turns_run=1,
+            error_code=None,
+            message=None,
+        )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+
+            def fail_publish(_snapshot: object, *, owner_token: str | None = None) -> Path:
+                del owner_token
+                raise RuntimeSnapshotUnavailableError("snapshot disk unavailable")
+
+            monkeypatch.setattr("symphony.orchestrator.core.publish_runtime_snapshot", fail_publish)
+
+            await orchestrator.startup()
+
+            worker_task: asyncio.Task[AttemptResult] = asyncio.create_task(done_result())
+            monitor_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
+            orchestrator.state.running["issue-1"] = RunningEntry(
+                issue=build_issue(),
+                attempt=None,
+                worker_task=worker_task,
+                monitor_task=monitor_task,
+                started_at=datetime.now(UTC),
+            )
+
+            event = AgentRuntimeEvent(
+                event="turn_completed",
+                timestamp=datetime.now(UTC),
+                session_id="thr_123-turn_1",
+                thread_id="thr_123",
+                turn_id="turn_1",
+                codex_app_server_pid=123,
+                usage=UsageSnapshot(input_tokens=10, output_tokens=5, total_tokens=15),
+                payload={},
+            )
+
+            with pytest.warns(RuntimeWarning, match="cumulative snapshots"):
+                await orchestrator._handle_worker_event("issue-1", event)
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["counts"]["running"] == 1
+
+            await asyncio.gather(worker_task, monitor_task)
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_tolerates_invalid_runtime_snapshot_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    invalid_parent = tmp_path / "snapshot-parent"
+    invalid_parent.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setenv(
+        "SYMPHONY_RUNTIME_SNAPSHOT_PATH",
+        str(invalid_parent / "runtime-snapshot.json"),
+    )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=build_config(tmp_path=tmp_path), tracker_client=FakeTrackerClient()
+        )
+        try:
+            await orchestrator.startup()
+            await orchestrator.run_once()
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["counts"] == {"running": 0, "retrying": 0}
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_shutdown_keeps_newer_snapshot_from_other_process(tmp_path: Path) -> None:
+    config = build_config(tmp_path=tmp_path)
+    snapshot_path = get_runtime_snapshot_path()
+
+    async def pending_result() -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator_a = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        orchestrator_b = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        worker_task: asyncio.Task[AttemptResult] | None = None
+        monitor_task: asyncio.Task[None] | None = None
+        try:
+            await orchestrator_a.startup()
+
+            worker_task = asyncio.create_task(pending_result())
+            monitor_task = asyncio.create_task(asyncio.sleep(0))
+            orchestrator_b.state.running["issue-2"] = RunningEntry(
+                issue=build_issue(issue_id="issue-2", identifier="SYM-456"),
+                attempt=None,
+                worker_task=worker_task,
+                monitor_task=monitor_task,
+                started_at=datetime.now(UTC),
+            )
+            await orchestrator_b.startup()
+            orchestrator_b._refresh_runtime_snapshot()
+
+            await orchestrator_a.aclose()
+
+            assert snapshot_path.is_file()
+            published_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            assert published_snapshot["counts"] == {"running": 1, "retrying": 0}
+            assert published_snapshot["running"][0]["issue_id"] == "issue-2"
+        finally:
+            if orchestrator_a._started:
+                await orchestrator_a.aclose()
+            if orchestrator_b._started:
+                await orchestrator_b.aclose()
+            if worker_task is not None:
+                await asyncio.gather(worker_task, return_exceptions=True)
+            if monitor_task is not None:
+                await asyncio.gather(monitor_task, return_exceptions=True)
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_heartbeat_refreshes_snapshot_while_worker_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path)
+    tracker_client = FakeTrackerClient(candidate_batches=[[issue]])
+    snapshot_path = get_runtime_snapshot_path()
+    monkeypatch.setenv("SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS", "1")
+
+    async def pending_worker_runner(**kwargs: object) -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=tracker_client,
+            worker_runner=pending_worker_runner,
+        )
+        try:
+            await orchestrator.run_once()
+
+            first_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            first_generated_at = parse_snapshot_timestamp(first_snapshot["generated_at"])
+            assert first_generated_at is not None
+
+            await asyncio.sleep(1.2)
+
+            second_snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            second_generated_at = parse_snapshot_timestamp(second_snapshot["generated_at"])
+            assert second_generated_at is not None
+            assert second_generated_at > first_generated_at
+            assert second_snapshot["counts"] == {"running": 1, "retrying": 0}
+            assert second_snapshot["running"][0]["issue_id"] == issue.id
+        finally:
+            await orchestrator.aclose()
 
     asyncio.run(run_test())

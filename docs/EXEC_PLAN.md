@@ -58,6 +58,33 @@ state transitions rather than low-level Codex protocol uncertainty.
 - [x] 2026-03-10 01:53Z: Validated the backend surface with
   `uv run ruff check apps/api`, `uv run mypy apps/api`, and `uv run pytest`, ending at
   `103 passed in 6.52s`.
+- [x] 2026-03-10 04:06Z: Added the first runtime snapshot surface from orchestrator state in
+  `apps/api/symphony/orchestrator/core.py` and exposed `GET /api/v1/state` via
+  `apps/api/symphony/api/` + `apps/api/config/urls.py`, including running rows, retry rows,
+  aggregate Codex totals, and latest rate limits.
+- [x] 2026-03-10 04:06Z: Added focused coverage in
+  `apps/api/tests/unit/orchestrator/test_core.py` and `apps/api/tests/unit/api/test_state.py` and
+  validated the touched backend surface with
+  `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/api/test_state.py`
+  (`13 passed in 0.75s`) plus `uv run mypy apps/api`.
+- [x] 2026-03-10 05:20Z: Replaced the `/api/v1/state` in-process-only provider dependency with a
+  file-backed runtime snapshot bridge in `apps/api/symphony/observability/runtime.py`, kept the
+  orchestrator as the snapshot owner/publisher from `apps/api/symphony/orchestrator/core.py`,
+  aligned API errors to the spec envelope in `apps/api/symphony/api/views.py`, and added focused
+  coverage for cross-process reads plus `405 Method Not Allowed`.
+- [x] 2026-03-10 05:35Z: Hardened the snapshot bridge so observability file publish/cleanup
+  failures do not break orchestrator correctness, let `/api/v1/state` keep serving the live
+  in-process provider when file refresh fails, and switched snapshot temp writes to unique files to
+  avoid same-path writer collisions.
+- [x] 2026-03-10 06:10Z: Moved the runtime snapshot bridge out of `apps/api/symphony/api/` and
+  into `apps/api/symphony/observability/runtime.py` so the optional HTTP layer stays read-only and
+  the orchestrator depends on observability infrastructure rather than API views.
+- [x] 2026-03-10 06:45Z: Fixed the post-review correctness and robustness issues in the first
+  observability slice: `turn_count` now tracks distinct observed `turn_id`s, runtime snapshot
+  refresh no longer performs file publication while holding the orchestrator's async state lock,
+  stale file-backed snapshots are rejected, default snapshot file names are process-specific, retry
+  snapshot rows no longer store redundant monotonic due times, and the focused tests now cover
+  repeated same-turn events plus stale snapshot rejection.
 
 ## Surprises & Discoveries
 
@@ -85,6 +112,31 @@ state transitions rather than low-level Codex protocol uncertainty.
   Evidence: `apps/api/tests/unit/management/test_run_orchestrator.py` now patches
   `Orchestrator.run_once()` and `Orchestrator.run_forever()` separately and verifies both command
   paths without hanging the test process.
+
+- Observation: A read-only API surface still needs a durable bridge when the orchestrator and
+  Django are in separate processes. The smallest acceptable version here is an explicit snapshot
+  file, not a second state machine inside Django.
+  Evidence: The updated `/api/v1/state` tests read a snapshot written by the orchestrator after the
+  in-process provider has been cleared, and still return `200`.
+
+- Observation: Because the HTTP snapshot surface is optional, snapshot file I/O must not sit on the
+  orchestrator's correctness path. Write or cleanup failures should degrade the status surface, not
+  stop startup, event handling, or shutdown.
+  Evidence: The hardened snapshot tests now force publish failures during startup and worker-event
+  updates while the orchestrator continues serving its in-memory snapshot.
+
+- Observation: Letting `GET /api/v1/state` republish the snapshot to disk subtly turns a read-only
+  observability endpoint into a writer and inverts the intended module boundary.
+  Evidence: The follow-up review found `apps/api/symphony/api/runtime.py` being imported by
+  `apps/api/symphony/orchestrator/core.py`, and the view-path snapshot getter was writing the file
+  again on every successful in-process read.
+
+- Observation: Refreshing the exported snapshot while still holding the orchestrator's async state
+  lock couples fast in-memory bookkeeping with potentially slow filesystem I/O in the same critical
+  section.
+  Evidence: The follow-up fixes moved `_refresh_runtime_snapshot()` out of the `async with
+  self._lock` regions in event handling, retry dispatch, and reconciliation so the async lock now
+  covers only in-memory state mutation.
 
 ## Decision Log
 
@@ -125,6 +177,49 @@ state transitions rather than low-level Codex protocol uncertainty.
   exponential backoff, release, or cleanup.
   Date/Author: 2026-03-10 / Codex
 
+- Decision: Implement the first `/api/v1/state` surface as an orchestrator-owned snapshot export
+  plus a minimal API-provider registry, instead of rebuilding runtime state inside Django views.
+  Rationale: The spec requires status surfaces to draw from orchestrator state. A provider registry
+  keeps the view read-only and makes the “no live provider” case explicit without moving
+  orchestration into request handlers.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Promote the snapshot export to a small file-backed bridge shared by the orchestrator
+  and Django, while keeping the in-process provider only as an optional same-process fallback.
+  Rationale: The repository boundary is explicit that `run_orchestrator` is a separate long-running
+  process. Publishing the already-built runtime snapshot atomically to disk preserves that boundary
+  and makes `/api/v1/state` work without recreating orchestrator state in request handlers.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Treat snapshot file publication and cleanup as best-effort side effects and never let
+  them fail orchestrator lifecycle or live event handling.
+  Rationale: `docs/SPEC.md` explicitly marks the snapshot/status surface as optional and not
+  required for correctness. The in-memory orchestrator snapshot remains authoritative; the shared
+  file is only a bridge for other processes.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Move the runtime snapshot bridge into `apps/api/symphony/observability/` and keep the
+  Django view strictly read-only.
+  Rationale: The code map assigns runtime snapshots to the observability layer, and `docs/SPEC.md`
+  treats the HTTP server as an optional extension. The orchestrator should publish snapshots
+  through observability infrastructure; `GET /api/v1/state` should only read the best available
+  snapshot source.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Treat `turn_count` as “number of distinct turn IDs observed in the current worker
+  session” instead of “number of turn transitions.”
+  Rationale: The snapshot/status surface needs a stable count that does not depend on the order of
+  repeated events within one turn. Tracking seen `turn_id`s removes the off-by-one ambiguity from
+  the initial event and matches the worker-facing semantics that operators care about.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Reject stale file-backed snapshots and use process-specific default snapshot paths.
+  Rationale: The JSON API should not present arbitrarily old runtime state as live when the
+  orchestrator has exited or multiple local orchestrators are sharing one machine. Expiry metadata
+  and PID-scoped default paths keep the first observability surface honest without introducing a
+  larger coordination mechanism.
+  Date/Author: 2026-03-10 / Codex
+
 ## Outcomes & Retrospective
 
 - 2026-03-10: Replaced the generic execution roadmap with a repository-state-aware ExecPlan. The
@@ -135,6 +230,24 @@ state transitions rather than low-level Codex protocol uncertainty.
   agent runner, a single-issue worker harness, and a working orchestrator core with retry and
   reconciliation tests. Remaining work is no longer foundational execution plumbing; it is follow-on
   product and operational surface area.
+- 2026-03-10: Added the first operator-visible runtime snapshot/export path. The backend can now
+  serialize orchestrator state into a JSON-friendly summary and expose it at `GET /api/v1/state`,
+  while preserving `GET /healthz`. The remaining gap for observability is cross-process delivery if
+  the orchestrator and Django server do not share a process.
+- 2026-03-10: Closed the first observability gap by having the orchestrator publish runtime
+  snapshots to a small shared JSON file that Django can read across process boundaries. The API now
+  returns spec-style error envelopes and explicit `405` responses on unsupported methods, while
+  preserving the existing health check.
+- 2026-03-10: Hardened the first observability surface so file I/O failures now degrade only the
+  shared snapshot bridge rather than the orchestrator itself. Same-process `/api/v1/state` reads
+  continue to work from the live provider, and file writes now use unique temp paths to avoid
+  writer collisions before the final atomic replace.
+- 2026-03-10: Tightened the module boundary after review. The runtime snapshot bridge now lives in
+  the observability layer, and the HTTP endpoint no longer republishes snapshots during a read.
+- 2026-03-10: Tightened the first observability surface after a second review pass. Snapshot reads
+  now reject stale files, default snapshot files no longer collide across local orchestrator
+  processes, distinct turns are counted deterministically, and snapshot publication no longer holds
+  the orchestrator's async state lock across filesystem I/O.
 
 ## Context and Orientation
 
