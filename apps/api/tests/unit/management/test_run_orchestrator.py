@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from pathlib import Path
 
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from symphony.management.commands.run_orchestrator import Command
 from symphony.management.commands.run_orchestrator import Orchestrator as CommandOrchestrator
 
 MINIMAL_VALID_WORKFLOW = """---
@@ -37,6 +39,12 @@ class FakeHTTPServer:
 
     def close(self) -> None:
         self.close_calls += 1
+
+
+class ExplodingHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        del record
+        raise RuntimeError("sink exploded")
 
 
 def fake_async_method(calls: list[str], name: str) -> object:
@@ -242,22 +250,75 @@ def test_run_orchestrator_cli_port_overrides_workflow_port(
 
 
 def test_run_orchestrator_rejects_negative_cli_port(
+    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     write_workflow(tmp_path / "WORKFLOW.md")
     monkeypatch.chdir(tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(CommandError, match=r"port must be an integer greater than or equal to 0"):
         call_command("run_orchestrator", "--port", "-1")
+    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+
+
+def test_run_orchestrator_rejects_non_integer_port_option(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    command = Command()
+    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
+
+    with pytest.raises(
+        CommandError,
+        match=r"Startup failed \(workflow_config_error\): port must be an integer\.",
+    ):
+        command.handle(port="abc")
+
+    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+
+
+def test_run_orchestrator_survives_logging_sink_failures(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md")
+    monkeypatch.chdir(tmp_path)
+    command_logger = logging.getLogger("symphony.management.commands.run_orchestrator")
+    original_handlers = list(command_logger.handlers)
+    original_propagate = command_logger.propagate
+    original_level = command_logger.level
+    command_logger.handlers = [ExplodingHandler()]
+    command_logger.propagate = False
+    command_logger.setLevel(logging.WARNING)
+
+    try:
+        with pytest.raises(
+            CommandError,
+            match=r"port must be an integer greater than or equal to 0",
+        ):
+            call_command("run_orchestrator", "--port", "-1")
+    finally:
+        command_logger.handlers = original_handlers
+        command_logger.propagate = original_propagate
+        command_logger.setLevel(original_level)
+
+    assert (
+        "event=log_sink_failed "
+        "logger_name=symphony.management.commands.run_orchestrator "
+        'error_code=RuntimeError message="sink exploded"'
+    ) in capsys.readouterr().err
 
 
 def test_run_orchestrator_surfaces_http_server_bind_failures(
+    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
     monkeypatch.chdir(tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
     monkeypatch.setattr(
         "symphony.management.commands.run_orchestrator.start_runtime_http_server",
         lambda *, host, port: (_ for _ in ()).throw(OSError("address in use")),
@@ -265,6 +326,7 @@ def test_run_orchestrator_surfaces_http_server_bind_failures(
 
     with pytest.raises(CommandError, match=r"Startup failed \(http_server_error\):"):
         call_command("run_orchestrator", "--once")
+    assert "event=http_server_bind_failed host=127.0.0.1 port=43123" in caplog.text
 
 
 def test_run_orchestrator_fails_when_default_workflow_is_missing(
@@ -285,6 +347,7 @@ def test_run_orchestrator_fails_when_explicit_workflow_is_missing(tmp_path: Path
 
 
 def test_run_orchestrator_surfaces_workflow_parse_failures(
+    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -294,9 +357,12 @@ def test_run_orchestrator_surfaces_workflow_parse_failures(
     )
 
     monkeypatch.chdir(tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(CommandError, match=r"Startup failed \(workflow_parse_error\):"):
         call_command("run_orchestrator")
+    assert "event=workflow_load_failed" in caplog.text
+    assert "error_code=workflow_parse_error" in caplog.text
 
 
 def test_run_orchestrator_surfaces_config_validation_failures(

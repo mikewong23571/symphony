@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from symphony.agent_runner import AgentRuntimeEvent, AttemptResult, run_issue_attempt
 from symphony.common.types import ServiceInfo
+from symphony.observability.logging import log_event
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     clear_runtime_snapshot_file,
@@ -29,7 +30,7 @@ from symphony.observability.snapshots import isoformat_utc, refresh_runtime_snap
 from symphony.tracker import Issue, LinearTrackerClient
 from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
 from symphony.workspace import WorkspaceError, WorkspaceManager
-from symphony.workspace.hooks import run_hook_best_effort
+from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
 
 CONTINUATION_RETRY_DELAY_MS = 1_000
 FAILURE_RETRY_BASE_DELAY_MS = 10_000
@@ -248,28 +249,79 @@ class Orchestrator:
     async def tick(self) -> None:
         dispatched_any = False
         try:
-            await self._reload_workflow_config_if_needed()
-            await self.reconcile_running_issues()
+            try:
+                await self._reload_workflow_config_if_needed()
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "workflow_reload_failed",
+                    fields={
+                        "error_code": _error_code(exc),
+                        "message": _error_message(exc),
+                    },
+                )
+                return
+
+            try:
+                await self.reconcile_running_issues()
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "running_issue_reconcile_failed",
+                    fields={
+                        "error_code": _error_code(exc),
+                        "message": _error_message(exc),
+                    },
+                )
+                return
+
             if self._workflow_runtime_has_error():
                 return
 
-            validate_dispatch_config(self.config)
-            candidate_issues = await asyncio.to_thread(self.tracker_client.fetch_candidate_issues)
-        except Exception:
-            return
+            try:
+                validate_dispatch_config(self.config)
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "dispatch_validation_failed",
+                    fields={
+                        "error_code": _error_code(exc),
+                        "message": _error_message(exc),
+                    },
+                )
+                return
+
+            try:
+                candidate_issues = await asyncio.to_thread(
+                    self.tracker_client.fetch_candidate_issues
+                )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "tracker_candidate_fetch_failed",
+                    fields={
+                        "error_code": _error_code(exc),
+                        "message": _error_message(exc),
+                    },
+                )
+                return
+
+            for issue in self._sort_issues_for_dispatch(candidate_issues):
+                async with self._lock:
+                    if self._available_slots() <= 0:
+                        break
+                    if not self._should_dispatch(issue):
+                        continue
+                    await self._dispatch_issue(issue, attempt=None)
+                    dispatched_any = True
+
+            if dispatched_any:
+                self._refresh_runtime_snapshot()
         finally:
-            self._refresh_runtime_snapshot()
-
-        for issue in self._sort_issues_for_dispatch(candidate_issues):
-            async with self._lock:
-                if self._available_slots() <= 0:
-                    break
-                if not self._should_dispatch(issue):
-                    continue
-                await self._dispatch_issue(issue, attempt=None)
-                dispatched_any = True
-
-        if dispatched_any:
             self._refresh_runtime_snapshot()
 
     async def reconcile_running_issues(self) -> None:
@@ -285,7 +337,17 @@ class Orchestrator:
                 self.tracker_client.fetch_issue_states_by_ids,
                 running_ids,
             )
-        except Exception:
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "tracker_running_state_refresh_failed",
+                fields={
+                    "issue_ids": running_ids,
+                    "error_code": _error_code(exc),
+                    "message": _error_message(exc),
+                },
+            )
             return
 
         refreshed_by_id = {issue.id: issue for issue in refreshed_issues}
@@ -354,13 +416,37 @@ class Orchestrator:
                 self.tracker_client.fetch_issues_by_states,
                 self.config.tracker.terminal_states,
             )
-        except Exception:
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_terminal_fetch_failed",
+                fields={
+                    "tracker_states": self.config.tracker.terminal_states,
+                    "error_code": _error_code(exc),
+                    "message": _error_message(exc),
+                },
+            )
             return
 
         for issue in terminal_issues:
             try:
-                await self._cleanup_workspace(issue.identifier)
-            except Exception:
+                await self._cleanup_workspace(
+                    issue.identifier,
+                    issue_id=issue.id,
+                )
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "startup_terminal_cleanup_failed",
+                    fields={
+                        "issue_id": issue.id,
+                        "issue_identifier": issue.identifier,
+                        "error_code": _error_code(exc),
+                        "message": _error_message(exc),
+                    },
+                )
                 continue
 
     async def _dispatch_issue(self, issue: Issue, *, attempt: int | None) -> None:
@@ -438,10 +524,32 @@ class Orchestrator:
 
     async def _handle_worker_event(self, issue_id: str, event: AgentRuntimeEvent) -> None:
         snapshot_needs_refresh = False
+        issue_identifier: str | None = None
+        if event.event == "stderr_diagnostic":
+            async with self._lock:
+                running_entry = self.state.running.get(issue_id)
+                if running_entry is None:
+                    return
+                issue_identifier = running_entry.issue.identifier
+
+            log_event(
+                logger,
+                logging.INFO,
+                "app_server_stderr",
+                fields={
+                    "issue_id": issue_id,
+                    "issue_identifier": issue_identifier,
+                    "session_id": _blank_to_none(event.session_id),
+                    "line": event.payload.get("line"),
+                },
+            )
+            return
+
         async with self._lock:
             running_entry = self.state.running.get(issue_id)
             if running_entry is None:
                 return
+            issue_identifier = running_entry.issue.identifier
 
             if event.turn_id and event.turn_id not in running_entry.seen_turn_ids:
                 running_entry.seen_turn_ids.add(event.turn_id)
@@ -482,6 +590,22 @@ class Orchestrator:
                 self.state.codex_rate_limits = rate_limits
 
             snapshot_needs_refresh = True
+
+        log_level = logging.INFO
+        log_name = "worker_event"
+        log_fields: dict[str, object | None] = {
+            "issue_id": issue_id,
+            "issue_identifier": issue_identifier,
+            "session_id": _blank_to_none(event.session_id),
+            "agent_event": event.event,
+        }
+        if event.event == "startup_failed":
+            log_level = logging.WARNING
+            log_name = "agent_startup_failed"
+            log_fields["message"] = event.payload.get("message")
+        else:
+            log_fields["message"] = _summarize_payload(event.payload)
+        log_event(logger, log_level, log_name, fields=log_fields)
 
         if snapshot_needs_refresh:
             self._refresh_runtime_snapshot()
@@ -536,12 +660,29 @@ class Orchestrator:
 
             snapshot_needs_refresh = True
 
+        log_event(
+            logger,
+            logging.INFO if result.status == "succeeded" else logging.WARNING,
+            "worker_exit",
+            fields={
+                "issue_id": issue_id,
+                "issue_identifier": result.issue.identifier,
+                "session_id": result.session_id,
+                "status": result.status,
+                "attempt": result.attempt,
+                "turns_run": result.turns_run,
+                "error_code": result.error_code,
+                "message": result.message,
+                "workspace_path": result.workspace_path,
+            },
+        )
         if snapshot_needs_refresh:
             self._refresh_runtime_snapshot()
 
         if cleanup_identifier is not None:
             await self._cleanup_workspace(
                 issue_identifier=cleanup_identifier,
+                issue_id=issue_id,
                 workspace_path=cleanup_workspace_path,
             )
             return
@@ -588,6 +729,20 @@ class Orchestrator:
             error=error,
         )
         self.state.claimed.add(issue_id)
+        log_event(
+            logger,
+            logging.INFO,
+            "retry_scheduled",
+            fields={
+                "issue_id": issue_id,
+                "issue_identifier": identifier,
+                "attempt": attempt,
+                "delay_ms": delay_ms,
+                "due_at": due_at,
+                "error": error,
+                "workspace_path": self.state.retry_attempts[issue_id].workspace_path,
+            },
+        )
         if refresh_snapshot:
             self._refresh_runtime_snapshot()
 
@@ -617,8 +772,20 @@ class Orchestrator:
 
         try:
             candidate_issues = await asyncio.to_thread(self.tracker_client.fetch_candidate_issues)
-        except Exception:
+        except Exception as exc:
             next_attempt = retry_entry.attempt + 1
+            log_event(
+                logger,
+                logging.WARNING,
+                "retry_candidate_fetch_failed",
+                fields={
+                    "issue_id": issue_id,
+                    "issue_identifier": retry_entry.identifier,
+                    "attempt": retry_entry.attempt,
+                    "error_code": _error_code(exc),
+                    "message": _error_message(exc),
+                },
+            )
             await self._schedule_retry(
                 issue_id=issue_id,
                 identifier=retry_entry.identifier,
@@ -696,18 +863,21 @@ class Orchestrator:
         if cleanup_workspace:
             await self._cleanup_workspace(
                 issue_identifier=issue_identifier,
+                issue_id=issue_id,
                 workspace_path=workspace_path,
             )
 
     async def _cleanup_workspace(
         self,
         issue_identifier: str,
+        issue_id: str | None = None,
         workspace_path: Path | None = None,
     ) -> None:
         manager = self.workspace_manager
         if workspace_path is not None and workspace_path.parent != manager.root:
             manager = WorkspaceManager(workspace_path.parent)
         await self._cleanup_workspace_from_manager(
+            issue_id=issue_id,
             issue_identifier=issue_identifier,
             workspace_path=workspace_path,
             manager=manager,
@@ -716,6 +886,7 @@ class Orchestrator:
     async def _cleanup_workspace_from_manager(
         self,
         *,
+        issue_id: str | None = None,
         issue_identifier: str,
         workspace_path: Path | None,
         manager: WorkspaceManager,
@@ -724,20 +895,42 @@ class Orchestrator:
             cleanup_path = workspace_path
             if cleanup_path is None:
                 cleanup_path = manager.resolve_workspace_path(issue_identifier)
+        except (OSError, WorkspaceError) as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "workspace_cleanup_failed",
+                fields={
+                    "issue_id": issue_id,
+                    "issue_identifier": issue_identifier,
+                    "workspace_path": workspace_path,
+                    "error_code": _error_code(exc),
+                    "message": _error_message(exc),
+                },
+            )
+            return
 
-            if cleanup_path.is_dir():
-                await run_hook_best_effort(
-                    name="before_remove",
-                    script=self.config.hooks.before_remove,
-                    cwd=cleanup_path,
-                    timeout_ms=self.config.hooks.timeout_ms,
-                )
+        if cleanup_path.is_dir():
+            await self._run_before_remove_hook(
+                issue_id=issue_id,
+                issue_identifier=issue_identifier,
+                workspace_path=cleanup_path,
+            )
+
+        try:
             manager.remove_workspace_path(cleanup_path)
         except (OSError, WorkspaceError) as exc:
-            logger.warning(
-                "Workspace cleanup failed for %s: %s",
-                issue_identifier,
-                exc,
+            log_event(
+                logger,
+                logging.WARNING,
+                "workspace_cleanup_failed",
+                fields={
+                    "issue_id": issue_id,
+                    "issue_identifier": issue_identifier,
+                    "workspace_path": cleanup_path,
+                    "error_code": _error_code(exc),
+                    "message": _error_message(exc),
+                },
             )
             return
 
@@ -848,6 +1041,8 @@ class Orchestrator:
         try:
             publish_runtime_snapshot(snapshot, owner_token=self._runtime_snapshot_owner_token)
         except RuntimeSnapshotUnavailableError:
+            # Keep the traceback here. Snapshot file I/O failures are relatively rare and the
+            # exception context is more useful than the stable key=value wrapper in this path.
             logger.warning(
                 "Runtime snapshot file publish failed; continuing with in-memory snapshot only.",
                 exc_info=True,
@@ -857,6 +1052,8 @@ class Orchestrator:
         try:
             clear_runtime_snapshot_file(owner_token=self._runtime_snapshot_owner_token)
         except RuntimeSnapshotUnavailableError:
+            # Shutdown cleanup failures also benefit from the full traceback for host-level
+            # debugging, so preserve the legacy exc_info logging here.
             logger.warning(
                 "Runtime snapshot file cleanup failed during orchestrator shutdown.",
                 exc_info=True,
@@ -898,6 +1095,7 @@ class Orchestrator:
                 )
                 if previous_workspace_path != next_workspace_path:
                     self._schedule_retry_workspace_cleanup(
+                        issue_id=retry_entry.issue_id,
                         issue_identifier=retry_entry.identifier,
                         workspace_path=previous_workspace_path,
                         manager=previous_manager,
@@ -1030,10 +1228,15 @@ class Orchestrator:
         reload_error = self._workflow_runtime.last_error
         if reload_error is not None:
             if reload_error.observed_at != self._last_workflow_reload_error_at:
-                logger.warning(
-                    "Workflow reload failed; keeping last known good config. code=%s message=%s",
-                    reload_error.code,
-                    reload_error.message,
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "workflow_reload_failed",
+                    fields={
+                        "error_code": reload_error.code,
+                        "message": reload_error.message,
+                        "workflow_path": self._workflow_runtime.path,
+                    },
                 )
                 self._last_workflow_reload_error_at = reload_error.observed_at
             if refresh_snapshot:
@@ -1048,6 +1251,7 @@ class Orchestrator:
     def _schedule_retry_workspace_cleanup(
         self,
         *,
+        issue_id: str | None = None,
         issue_identifier: str,
         workspace_path: Path,
         manager: WorkspaceManager,
@@ -1057,6 +1261,7 @@ class Orchestrator:
 
         cleanup_task = asyncio.create_task(
             self._cleanup_workspace_from_manager(
+                issue_id=issue_id,
                 issue_identifier=issue_identifier,
                 workspace_path=workspace_path,
                 manager=manager,
@@ -1064,6 +1269,65 @@ class Orchestrator:
         )
         self._background_cleanup_tasks.add(cleanup_task)
         cleanup_task.add_done_callback(self._background_cleanup_tasks.discard)
+
+    async def _run_before_remove_hook(
+        self,
+        *,
+        issue_id: str | None,
+        issue_identifier: str,
+        workspace_path: Path,
+    ) -> None:
+        script = self.config.hooks.before_remove
+        if script is None:
+            return
+
+        log_event(
+            logger,
+            logging.INFO,
+            "hook_started",
+            fields={
+                "hook": "before_remove",
+                "issue_id": issue_id,
+                "issue_identifier": issue_identifier,
+                "workspace_path": workspace_path,
+            },
+        )
+        try:
+            await run_hook(
+                name="before_remove",
+                script=script,
+                cwd=workspace_path,
+                timeout_ms=self.config.hooks.timeout_ms,
+            )
+        except OSError as exc:
+            hook_error = build_hook_start_error(name="before_remove", exc=exc)
+            log_event(
+                logger,
+                logging.WARNING,
+                "hook_failed",
+                fields={
+                    "hook": "before_remove",
+                    "issue_id": issue_id,
+                    "issue_identifier": issue_identifier,
+                    "workspace_path": workspace_path,
+                    "error_code": hook_error.code,
+                    "message": hook_error.message,
+                },
+            )
+        except HookError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "hook_timed_out" if exc.code == "hook_timeout" else "hook_failed",
+                fields={
+                    "hook": "before_remove",
+                    "issue_id": issue_id,
+                    "issue_identifier": issue_identifier,
+                    "workspace_path": workspace_path,
+                    "error_code": exc.code,
+                    "message": exc.message,
+                },
+            )
 
 
 def _best_effort_workspace_path(manager: WorkspaceManager, issue_identifier: str) -> Path:
@@ -1138,3 +1402,27 @@ def _workflow_runtime_snapshot(workflow_runtime: WorkflowRuntime | None) -> dict
         "last_checked_at": isoformat_utc(status.last_checked_at),
         "last_error": last_error,
     }
+
+
+def _error_code(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and code.strip():
+        return code
+    return exc.__class__.__name__
+
+
+def _error_message(exc: Exception) -> str:
+    message = getattr(exc, "message", None)
+    if isinstance(message, str) and message.strip():
+        return message
+    text = str(exc)
+    if text:
+        return text
+    return exc.__class__.__name__
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None

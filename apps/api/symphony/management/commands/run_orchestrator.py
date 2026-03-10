@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -6,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
 from symphony.api.server import DEFAULT_HTTP_BIND_HOST, start_runtime_http_server
+from symphony.observability.logging import log_event
 from symphony.orchestrator import Orchestrator
 from symphony.workflow import (
     WorkflowConfigError,
@@ -17,6 +19,8 @@ if TYPE_CHECKING:
     from symphony.api.server import RuntimeHTTPServer
 
 __all__ = ["Command", "Orchestrator"]
+
+logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
@@ -42,12 +46,39 @@ class Command(BaseCommand):
     def handle(self, *args: object, **options: Any) -> str | None:
         workflow_path = options.get("workflow_path")
         if workflow_path is not None and not isinstance(workflow_path, str):
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_validation_failed",
+                fields={
+                    "error_code": "workflow_error",
+                    "message": "workflow path must be a string.",
+                },
+            )
             raise CommandError("Startup failed (workflow_error): workflow path must be a string.")
         run_once = bool(options.get("once"))
         cli_port = options.get("port")
         if cli_port is not None and not isinstance(cli_port, int):
-            raise CommandError("Startup failed (workflow_error): port must be an integer.")
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_validation_failed",
+                fields={
+                    "error_code": "workflow_config_error",
+                    "message": "port must be an integer.",
+                },
+            )
+            raise CommandError("Startup failed (workflow_config_error): port must be an integer.")
         if cli_port is not None and cli_port < 0:
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_validation_failed",
+                fields={
+                    "error_code": "workflow_config_error",
+                    "message": "port must be an integer greater than or equal to 0.",
+                },
+            )
             raise CommandError(
                 "Startup failed (workflow_config_error): "
                 "port must be an integer greater than or equal to 0."
@@ -57,6 +88,16 @@ class Command(BaseCommand):
         try:
             config = workflow_runtime.load_initial()
         except (WorkflowError, WorkflowConfigError) as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "workflow_load_failed",
+                fields={
+                    "workflow_path": workflow_runtime.path,
+                    "error_code": exc.code,
+                    "message": exc.message,
+                },
+            )
             raise CommandError(f"Startup failed ({exc.code}): {exc.message}") from exc
 
         self.stdout.write(f"Loaded workflow definition from {workflow_runtime.path}")
@@ -95,6 +136,17 @@ class Command(BaseCommand):
         try:
             http_server = start_runtime_http_server(host=DEFAULT_HTTP_BIND_HOST, port=port)
         except OSError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "http_server_bind_failed",
+                fields={
+                    "host": DEFAULT_HTTP_BIND_HOST,
+                    "port": port,
+                    "error_code": exc.__class__.__name__,
+                    "message": str(exc) or "could not bind HTTP server",
+                },
+            )
             raise CommandError(
                 f"Startup failed (http_server_error): could not bind HTTP server to "
                 f"{DEFAULT_HTTP_BIND_HOST}:{port}."

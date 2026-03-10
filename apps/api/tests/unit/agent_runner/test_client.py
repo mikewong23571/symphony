@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,8 +11,10 @@ from symphony.agent_runner import (
     AppServerResponseTimeoutError,
     AppServerSession,
     read_protocol_message,
+    start_app_server_session,
     start_next_turn,
 )
+from symphony.common.types import ServiceInfo
 
 from .helpers import FAKE_APP_SERVER_PATH, start_fake_app_server_session
 
@@ -93,6 +96,54 @@ def test_start_app_server_session_keeps_stderr_separate_from_stdout_protocol(
         try:
             assert session.session_id == "thr_123-turn_1"
             assert session.stderr_lines == ["stderr noise"]
+        finally:
+            await session.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_start_app_server_session_forwards_stderr_lines_to_callback(tmp_path: Path) -> None:
+    log_path = tmp_path / "messages.jsonl"
+    log_path.write_text("", encoding="utf-8")
+    command = (
+        f"FAKE_SERVER_MODE=stderr FAKE_SERVER_LOG={log_path} "
+        f"{sys.executable} {FAKE_APP_SERVER_PATH}"
+    )
+
+    async def run_test() -> None:
+        diagnostics: list[dict[str, object | None]] = []
+
+        session = await start_app_server_session(
+            command=command,
+            workspace_path=tmp_path,
+            prompt_text="Summarize this repo.",
+            title="SYM-123: Handshake",
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            approval_policy="never",
+            thread_sandbox="workspace-write",
+            turn_sandbox_policy={"type": "workspace-write"},
+            read_timeout_ms=1_000,
+            stderr_callback=lambda line, context: diagnostics.append(
+                {
+                    "line": line,
+                    "session_id": context.session_id,
+                    "thread_id": context.thread_id,
+                    "turn_id": context.turn_id,
+                    "pid": context.codex_app_server_pid,
+                }
+            ),
+        )
+        try:
+            assert session.stderr_lines == ["stderr noise"]
+            assert diagnostics == [
+                {
+                    "line": "stderr noise",
+                    "session_id": None,
+                    "thread_id": None,
+                    "turn_id": None,
+                    "pid": session.process.pid,
+                }
+            ]
         finally:
             await session.aclose()
 

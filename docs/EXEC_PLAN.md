@@ -14,7 +14,9 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 - [x] 2026-03-10 08:22Z: Audited `docs/SPEC_GAPS.md` against `docs/SPEC.md`, `docs/ROADMAP.md`, and the current backend implementation to identify the concrete modules and tests affected by every remaining gap.
 - [x] 2026-03-10 08:22Z: Replaced the placeholder `docs/EXEC_PLAN.md` with a repository-specific execution plan that covers all currently listed `SPEC_GAPS` items in milestone order.
-- [ ] Implement Milestone 1: operator-visible structured logging, hook failure logging, tracker failure surfacing, and app-server `stderr` diagnostics.
+- [x] 2026-03-10 09:32Z: Implemented Milestone 1: added repository-owned structured logging, surfaced tracker and startup failures, emitted hook lifecycle/failure logs with issue context, and forwarded app-server `stderr` diagnostics into operator-visible logs without affecting worker liveness semantics.
+- [x] 2026-03-10 09:32Z: Verified Milestone 1 with focused backend tests: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/agent_runner/test_client.py apps/api/tests/unit/workspace/test_hooks.py apps/api/tests/unit/management/test_run_orchestrator.py -q` -> `69 passed in 11.61s`.
+- [x] 2026-03-10 09:32Z: Ran repository quality gates after Milestone 1: `make lint` passed, `make typecheck` passed, and `make test` passed (`189 passed in 15.08s` for backend pytest; frontend Vitest exited `0` with `--passWithNoTests`).
 - [ ] Implement Milestone 2: workspace prep cleanup, prompt error taxonomy split, and spec-exact token accounting semantics.
 - [ ] Implement Milestone 3: restart recovery persistence and workflow-configurable observability settings.
 - [ ] Run focused backend checks after each milestone, then run `make lint`, `make typecheck`, and `make test`, and update this document’s `Outcomes & Retrospective` section with the exact results.
@@ -53,7 +55,15 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 ## Outcomes & Retrospective
 
-Work has not started yet. Success for this plan means `docs/SPEC_GAPS.md` can be updated so every current item is either removed or marked fixed, the backend test surface proves each behavior explicitly, and operators can verify the new behavior from logs and persisted runtime state without attaching a debugger. If implementation reveals a gap that deserves its own follow-on project, capture it here and in `docs/SPEC_GAPS.md` rather than letting it disappear into code comments.
+Milestone 1 is complete. The implementation now emits stable `key=value` logs for startup validation, tracker fetch/refresh failures, retry scheduling, worker exit paths, workspace hook lifecycle/failures, startup terminal cleanup, and app-server `stderr` diagnostics. The `stderr` path remains operator-visible without mutating progress/liveness state, and hook subprocess startup failures now retain `hook=...` context in logs.
+
+Validation so far:
+
+- Focused Milestone 1 suite passed: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/agent_runner/test_client.py apps/api/tests/unit/workspace/test_hooks.py apps/api/tests/unit/management/test_run_orchestrator.py -q` -> `69 passed in 11.61s`.
+- Repository gates passed after the milestone: `make lint`, `make typecheck`, and `make test`.
+- `make test` details: backend `pytest` -> `189 passed in 15.08s`; frontend `vitest run --passWithNoTests` exited `0`.
+
+Success for the remaining plan still means `docs/SPEC_GAPS.md` can be updated so every current item is either removed or marked fixed, the backend test surface proves each behavior explicitly, and operators can verify the new behavior from logs and persisted runtime state without attaching a debugger. If later implementation reveals a gap that deserves its own follow-on project, capture it here and in `docs/SPEC_GAPS.md` rather than letting it disappear into code comments.
 
 ## Context and Orientation
 

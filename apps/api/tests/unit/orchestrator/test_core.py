@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -335,9 +336,13 @@ def test_orchestrator_reconcile_cleans_terminal_workspaces(tmp_path: Path) -> No
     asyncio.run(run_test())
 
 
-def test_orchestrator_reschedules_retry_when_retry_candidate_fetch_fails(tmp_path: Path) -> None:
+def test_orchestrator_reschedules_retry_when_retry_candidate_fetch_fails(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
     issue = build_issue()
     config = build_config(tmp_path=tmp_path)
+    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
 
     class FailingRetryTracker(FakeTrackerClient):
         def fetch_candidate_issues(self) -> list[Issue]:
@@ -371,6 +376,10 @@ def test_orchestrator_reschedules_retry_when_retry_candidate_fetch_fails(tmp_pat
             await orchestrator.aclose()
 
     asyncio.run(run_test())
+    assert "event=retry_candidate_fetch_failed" in caplog.text
+    assert (
+        "event=retry_scheduled issue_id=issue-1 issue_identifier=SYM-123 attempt=2"
+    ) in caplog.text
 
 
 async def _wait_for_retry_attempt(
@@ -684,7 +693,10 @@ def test_workflow_runtime_reuse_across_orchestrator_lifecycles(tmp_path: Path) -
     asyncio.run(run_test())
 
 
-def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(tmp_path: Path) -> None:
+def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
     issue = build_issue()
     done_issue = build_issue(state="Done")
     workflow_path = write_runtime_workflow(
@@ -695,6 +707,7 @@ def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(tmp_path: P
     config = workflow_runtime.load_initial()
     tracker_client = FakeTrackerClient(candidate_batches=[[issue], [issue]])
     prompts_seen: list[str] = []
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
 
     async def worker_runner(**kwargs: object) -> AttemptResult:
         config = kwargs["config"]
@@ -750,6 +763,7 @@ def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(tmp_path: P
             await orchestrator.aclose()
 
     asyncio.run(run_test())
+    assert "event=workflow_reload_failed error_code=workflow_parse_error" in caplog.text
 
 
 def test_orchestrator_requeues_retry_when_workflow_reload_is_invalid(tmp_path: Path) -> None:
@@ -904,7 +918,260 @@ def test_orchestrator_startup_cleanup_ignores_workspace_remove_failures(
             await orchestrator.aclose()
 
     asyncio.run(run_test())
-    assert "Workspace cleanup failed for SYM-123" in caplog.text
+    assert "event=workspace_cleanup_failed" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+
+
+def test_orchestrator_logs_tracker_candidate_fetch_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+
+    class FailingTracker(FakeTrackerClient):
+        def fetch_candidate_issues(self) -> list[Issue]:
+            raise RuntimeError("tracker unavailable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FailingTracker())
+        try:
+            await orchestrator.run_once()
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=tracker_candidate_fetch_failed" in caplog.text
+    assert 'message="tracker unavailable"' in caplog.text
+
+
+def test_orchestrator_logs_running_state_refresh_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+
+    class FailingRefreshTracker(FakeTrackerClient):
+        def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]:
+            raise RuntimeError("refresh failed")
+
+    async def pending_attempt() -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FailingRefreshTracker())
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=datetime.now(UTC),
+        )
+        try:
+            await orchestrator.reconcile_running_issues()
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=tracker_running_state_refresh_failed" in caplog.text
+    assert 'issue_ids="[\\"issue-1\\"]"' in caplog.text
+
+
+def test_orchestrator_logs_app_server_stderr_diagnostics(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path)
+    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
+
+    async def pending_attempt() -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=datetime.now(UTC),
+        )
+
+        try:
+            await orchestrator._handle_worker_event(
+                issue.id,
+                AgentRuntimeEvent(
+                    event="stderr_diagnostic",
+                    timestamp=datetime.now(UTC),
+                    session_id="thr_123-turn_1",
+                    thread_id="thr_123",
+                    turn_id="turn_1",
+                    codex_app_server_pid=123,
+                    usage=None,
+                    payload={"line": "warning: schema mismatch"},
+                ),
+            )
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=app_server_stderr" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "session_id=thr_123-turn_1" in caplog.text
+    assert 'line="warning: schema mismatch"' in caplog.text
+    assert any(
+        record.levelno == logging.INFO and "event=app_server_stderr" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_orchestrator_distinguishes_startup_terminal_fetch_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+
+    class FailingTerminalTracker(FakeTrackerClient):
+        def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]:
+            raise RuntimeError("terminal fetch failed")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FailingTerminalTracker())
+        try:
+            await orchestrator.startup()
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=startup_terminal_fetch_failed" in caplog.text
+    assert "event=startup_terminal_cleanup_failed" not in caplog.text
+
+
+def test_orchestrator_stderr_diagnostics_do_not_update_progress_state(tmp_path: Path) -> None:
+    issue = build_issue()
+    config = build_config(tmp_path=tmp_path, stall_timeout_ms=50)
+    progress_timestamp = datetime(2026, 3, 10, 8, 0, tzinfo=UTC)
+    diagnostic_timestamp = progress_timestamp + timedelta(minutes=5)
+
+    async def pending_attempt() -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=progress_timestamp,
+        )
+
+        try:
+            await orchestrator._handle_worker_event(
+                issue.id,
+                AgentRuntimeEvent(
+                    event="notification",
+                    timestamp=progress_timestamp,
+                    session_id="thr_123-turn_1",
+                    thread_id="thr_123",
+                    turn_id="turn_1",
+                    codex_app_server_pid=123,
+                    usage=None,
+                    payload={"phase": "turn_started"},
+                ),
+            )
+            await orchestrator._handle_worker_event(
+                issue.id,
+                AgentRuntimeEvent(
+                    event="stderr_diagnostic",
+                    timestamp=diagnostic_timestamp,
+                    session_id="thr_123-turn_2",
+                    thread_id="thr_123",
+                    turn_id="turn_2",
+                    codex_app_server_pid=123,
+                    usage=None,
+                    payload={"line": "warning: schema mismatch"},
+                ),
+            )
+
+            running_entry = orchestrator.state.running[issue.id]
+            assert running_entry.turn_count == 1
+            assert running_entry.session_id == "thr_123-turn_1"
+            assert running_entry.turn_id == "turn_1"
+            assert running_entry.last_codex_event == "notification"
+            assert running_entry.last_codex_timestamp == progress_timestamp
+            assert running_entry.last_codex_message == '{"phase": "turn_started"}'
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["running"][0]["session_id"] == "thr_123-turn_1"
+            assert snapshot["running"][0]["last_event"] == "notification"
+            assert snapshot["running"][0]["turn_count"] == 1
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_logs_before_remove_hook_start_failures(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issue = build_issue(state="Done")
+    config = build_config(tmp_path=tmp_path, before_remove="echo cleanup")
+    workspace_manager = WorkspaceManager(config.workspace.root)
+    workspace_path = workspace_manager.ensure_workspace(issue.identifier).path
+    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
+
+    async def fail_run_hook(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr("symphony.orchestrator.core.run_hook", fail_run_hook)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workspace_manager=workspace_manager,
+        )
+        try:
+            await orchestrator._cleanup_workspace(
+                issue_identifier=issue.identifier,
+                issue_id=issue.id,
+                workspace_path=workspace_path,
+            )
+            assert not workspace_path.exists()
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=hook_started hook=before_remove" in caplog.text
+    assert "event=hook_failed hook=before_remove" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
 
 
 def test_orchestrator_warns_once_about_unknown_usage_semantics(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -8,15 +9,24 @@ from pathlib import Path
 from typing import Protocol
 
 from symphony.common.types import ServiceInfo
+from symphony.observability.logging import log_event
 from symphony.tracker.models import Issue
 from symphony.workflow.config import ServiceConfig
 from symphony.workspace import Workspace, WorkspaceError, WorkspaceManager
-from symphony.workspace.hooks import HookError, run_hook, run_hook_best_effort
+from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
 
-from .client import AppServerError, AppServerSession, start_app_server_session, start_next_turn
+from .client import (
+    AppServerDiagnosticContext,
+    AppServerError,
+    AppServerSession,
+    start_app_server_session,
+    start_next_turn,
+)
 from .events import AgentRuntimeEvent, utcnow
 from .prompting import build_continuation_guidance, render_issue_prompt
 from .runner import stream_turn
+
+logger = logging.getLogger(__name__)
 
 
 class IssueStateRefresher(Protocol):
@@ -65,6 +75,17 @@ async def run_issue_attempt(
     approval_policy = _resolve_approval_policy(config)
     thread_sandbox = _resolve_thread_sandbox(config)
     turn_sandbox_policy = _resolve_turn_sandbox_policy(config)
+    stderr_callback = (
+        (
+            lambda line, context: _emit_stderr_diagnostic(
+                line=line,
+                context=context,
+                on_event=on_event,
+            )
+        )
+        if on_event is not None
+        else None
+    )
 
     try:
         workspace = manager.ensure_workspace(issue.identifier)
@@ -75,6 +96,7 @@ async def run_issue_attempt(
             await _run_required_hook(
                 name="after_create",
                 script=config.hooks.after_create,
+                issue=current_issue,
                 workspace=workspace,
                 timeout_ms=config.hooks.timeout_ms,
             )
@@ -83,6 +105,7 @@ async def run_issue_attempt(
         await _run_required_hook(
             name="before_run",
             script=config.hooks.before_run,
+            issue=current_issue,
             workspace=workspace,
             timeout_ms=config.hooks.timeout_ms,
         )
@@ -99,6 +122,7 @@ async def run_issue_attempt(
             thread_sandbox=thread_sandbox,
             turn_sandbox_policy=turn_sandbox_policy,
             read_timeout_ms=config.codex.read_timeout_ms,
+            stderr_callback=stderr_callback,
         )
         await _emit_worker_event(
             session=session,
@@ -244,11 +268,13 @@ async def run_issue_attempt(
             # is a future hook execution and should observe the latest live
             # workflow settings if they changed mid-run.
             active_config = config_provider() if config_provider is not None else config
-            await run_hook_best_effort(
+            await _run_best_effort_hook(
                 name="after_run",
                 script=active_config.hooks.after_run,
-                cwd=workspace.path,
+                issue=current_issue,
+                workspace_path=workspace.path,
                 timeout_ms=active_config.hooks.timeout_ms,
+                session_id=session.session_id if session is not None else None,
             )
 
 
@@ -272,12 +298,102 @@ async def _run_required_hook(
     *,
     name: str,
     script: str | None,
+    issue: Issue,
     workspace: Workspace,
     timeout_ms: int,
 ) -> None:
     if script is None:
         return
-    await run_hook(name=name, script=script, cwd=workspace.path, timeout_ms=timeout_ms)
+    _log_hook_event(
+        level=logging.INFO,
+        event="hook_started",
+        name=name,
+        issue=issue,
+        workspace_path=workspace.path,
+        session_id=None,
+    )
+    try:
+        await run_hook(name=name, script=script, cwd=workspace.path, timeout_ms=timeout_ms)
+    except OSError as exc:
+        hook_error = build_hook_start_error(name=name, exc=exc)
+        _log_hook_error(
+            name=name,
+            issue=issue,
+            workspace_path=workspace.path,
+            session_id=None,
+            exc=hook_error,
+        )
+        raise hook_error from exc
+    except HookError as exc:
+        _log_hook_error(
+            name=name,
+            issue=issue,
+            workspace_path=workspace.path,
+            session_id=None,
+            exc=exc,
+        )
+        raise
+
+
+async def _run_best_effort_hook(
+    *,
+    name: str,
+    script: str | None,
+    issue: Issue,
+    workspace_path: Path,
+    timeout_ms: int,
+    session_id: str | None,
+) -> None:
+    if script is None:
+        return
+    _log_hook_event(
+        level=logging.INFO,
+        event="hook_started",
+        name=name,
+        issue=issue,
+        workspace_path=workspace_path,
+        session_id=session_id,
+    )
+    try:
+        await run_hook(name=name, script=script, cwd=workspace_path, timeout_ms=timeout_ms)
+    except OSError as exc:
+        _log_hook_error(
+            name=name,
+            issue=issue,
+            workspace_path=workspace_path,
+            session_id=session_id,
+            exc=build_hook_start_error(name=name, exc=exc),
+        )
+    except HookError as exc:
+        _log_hook_error(
+            name=name,
+            issue=issue,
+            workspace_path=workspace_path,
+            session_id=session_id,
+            exc=exc,
+        )
+
+
+async def _emit_stderr_diagnostic(
+    *,
+    line: str,
+    context: AppServerDiagnosticContext,
+    on_event: Callable[[AgentRuntimeEvent], Awaitable[None]] | None,
+) -> None:
+    if on_event is None:
+        return
+    await on_event(
+        AgentRuntimeEvent(
+            event="stderr_diagnostic",
+            timestamp=utcnow(),
+            session_id=context.session_id or "",
+            thread_id=context.thread_id or "",
+            turn_id=context.turn_id or "",
+            codex_app_server_pid=context.codex_app_server_pid,
+            usage=None,
+            payload={"line": line},
+        )
+    )
 
 
 def _resolve_approval_policy(config: ServiceConfig) -> str:
@@ -357,3 +473,51 @@ def _is_active_issue_state(issue: Issue, config: ServiceConfig) -> bool:
     active_states = {value.strip().lower() for value in config.tracker.active_states}
     terminal_states = {value.strip().lower() for value in config.tracker.terminal_states}
     return state in active_states and state not in terminal_states
+
+
+def _log_hook_event(
+    *,
+    level: int,
+    event: str,
+    name: str,
+    issue: Issue,
+    workspace_path: Path,
+    session_id: str | None,
+) -> None:
+    log_event(
+        logger,
+        level,
+        event,
+        fields={
+            "hook": name,
+            "issue_id": issue.id,
+            "issue_identifier": issue.identifier,
+            "session_id": session_id,
+            "workspace_path": workspace_path,
+        },
+    )
+
+
+def _log_hook_error(
+    *,
+    name: str,
+    issue: Issue,
+    workspace_path: Path,
+    session_id: str | None,
+    exc: HookError,
+) -> None:
+    event_name = "hook_timed_out" if exc.code == "hook_timeout" else "hook_failed"
+    log_event(
+        logger,
+        logging.WARNING,
+        event_name,
+        fields={
+            "hook": name,
+            "issue_id": issue.id,
+            "issue_identifier": issue.identifier,
+            "session_id": session_id,
+            "workspace_path": workspace_path,
+            "error_code": exc.code,
+            "message": exc.message,
+        },
+    )

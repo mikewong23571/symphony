@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -35,6 +35,14 @@ class AppServerResponseTimeoutError(AppServerError):
 
 
 @dataclass(slots=True)
+class AppServerDiagnosticContext:
+    session_id: str | None
+    thread_id: str | None
+    turn_id: str | None
+    codex_app_server_pid: int | None
+
+
+@dataclass(slots=True)
 class AppServerSession:
     process: asyncio.subprocess.Process
     thread_id: str
@@ -45,6 +53,7 @@ class AppServerSession:
     stderr_lines: list[str] = field(default_factory=list)
     _stderr_task: asyncio.Task[None] | None = field(default=None, repr=False)
     _pending_messages: deque[Mapping[str, Any]] = field(default_factory=deque, repr=False)
+    _diagnostic_context: AppServerDiagnosticContext | None = field(default=None, repr=False)
 
     async def aclose(self) -> None:
         if self.process.returncode is None:
@@ -72,6 +81,9 @@ async def start_app_server_session(
     read_timeout_ms: int,
     capabilities: Mapping[str, Any] | None = None,
     model: str | None = None,
+    stderr_callback: (
+        Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
+    ) = None,
 ) -> AppServerSession:
     workspace_cwd = workspace_path.resolve()
 
@@ -90,7 +102,20 @@ async def start_app_server_session(
 
     stderr_lines: list[str] = []
     pending_messages: deque[Mapping[str, Any]] = deque()
-    stderr_task = asyncio.create_task(_drain_stderr(process, stderr_lines))
+    diagnostic_context = AppServerDiagnosticContext(
+        session_id=None,
+        thread_id=None,
+        turn_id=None,
+        codex_app_server_pid=process.pid,
+    )
+    stderr_task = asyncio.create_task(
+        _drain_stderr(
+            process,
+            stderr_lines,
+            stderr_callback=stderr_callback,
+            diagnostic_context=diagnostic_context,
+        )
+    )
 
     try:
         await _send_message(
@@ -139,6 +164,7 @@ async def start_app_server_session(
             pending_messages=pending_messages,
         )
         thread_id = _extract_required_id(thread_result, outer_key="thread")
+        diagnostic_context.thread_id = thread_id
 
         await _send_message(
             process,
@@ -162,6 +188,8 @@ async def start_app_server_session(
             pending_messages=pending_messages,
         )
         turn_id = _extract_required_id(turn_result, outer_key="turn")
+        diagnostic_context.turn_id = turn_id
+        diagnostic_context.session_id = f"{thread_id}-{turn_id}"
     except Exception:
         if process.returncode is None:
             process.terminate()
@@ -183,6 +211,7 @@ async def start_app_server_session(
         stderr_lines=stderr_lines,
         _stderr_task=stderr_task,
         _pending_messages=pending_messages,
+        _diagnostic_context=diagnostic_context,
     )
 
 
@@ -230,6 +259,9 @@ async def start_next_turn(
     turn_id = _extract_required_id(turn_result, outer_key="turn")
     session.turn_id = turn_id
     session.session_id = f"{session.thread_id}-{turn_id}"
+    if session._diagnostic_context is not None:
+        session._diagnostic_context.turn_id = turn_id
+        session._diagnostic_context.session_id = session.session_id
     return turn_id
 
 
@@ -350,6 +382,11 @@ def _extract_required_id(result: Mapping[str, Any], *, outer_key: str) -> str:
 async def _drain_stderr(
     process: asyncio.subprocess.Process,
     stderr_lines: list[str],
+    *,
+    stderr_callback: (
+        Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
+    ) = None,
+    diagnostic_context: AppServerDiagnosticContext,
 ) -> None:
     if process.stderr is None:
         return
@@ -358,4 +395,11 @@ async def _drain_stderr(
         line = await process.stderr.readline()
         if not line:
             return
-        stderr_lines.append(line.decode("utf-8", errors="replace").rstrip("\n"))
+        decoded_line = line.decode("utf-8", errors="replace").rstrip("\n")
+        stderr_lines.append(decoded_line)
+        if stderr_callback is None:
+            continue
+
+        callback_result = stderr_callback(decoded_line, diagnostic_context)
+        if callback_result is not None:
+            await callback_result

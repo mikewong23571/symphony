@@ -29,6 +29,11 @@ class HookResult:
     stderr: str
 
 
+def build_hook_start_error(*, name: str, exc: OSError) -> HookError:
+    detail = str(exc).strip() or exc.__class__.__name__
+    return HookError(f"Hook '{name}' could not start: {detail}.")
+
+
 async def run_hook(
     *,
     name: str,

@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import symphony.agent_runner.harness as harness_module
 from symphony.agent_runner import AgentRuntimeEvent, run_issue_attempt
+from symphony.agent_runner.client import AppServerStartupError
 from symphony.common.types import ServiceInfo
 from symphony.tracker.models import Issue
 from symphony.workflow.config import ServiceConfig, build_service_config
@@ -203,7 +206,10 @@ def test_run_issue_attempt_uses_latest_hook_config_for_after_run(tmp_path: Path)
     assert (marker_dir / "after_run_new").is_file()
 
 
-def test_run_issue_attempt_surfaces_before_run_hook_failures(tmp_path: Path) -> None:
+def test_run_issue_attempt_surfaces_before_run_hook_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
     marker_path = tmp_path / "after_run"
     config = build_config(
         tmp_path=tmp_path,
@@ -214,6 +220,8 @@ def test_run_issue_attempt_surfaces_before_run_hook_failures(tmp_path: Path) -> 
             "after_run": f"touch {marker_path}",
         },
     )
+
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -229,6 +237,149 @@ def test_run_issue_attempt_surfaces_before_run_hook_failures(tmp_path: Path) -> 
     asyncio.run(run_test())
 
     assert not marker_path.exists()
+    assert "event=hook_started hook=before_run" in caplog.text
+    assert "event=hook_failed hook=before_run" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+
+
+def test_run_issue_attempt_logs_after_run_best_effort_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=tmp_path / "messages.jsonl",
+        hook_overrides={"after_run": "exit 7"},
+    )
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+        )
+        assert result.status == "succeeded"
+
+    asyncio.run(run_test())
+
+    assert "event=hook_started hook=after_run" in caplog.text
+    assert "event=hook_failed hook=after_run" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("hook_overrides", "hook_name"),
+    [
+        ({"after_create": "echo bootstrap"}, "after_create"),
+        ({"before_run": "echo prep"}, "before_run"),
+    ],
+)
+def test_run_issue_attempt_logs_hook_start_failures(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hook_overrides: dict[str, str],
+    hook_name: str,
+) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=tmp_path / "messages.jsonl",
+        hook_overrides=hook_overrides,
+    )
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
+
+    async def fail_run_hook(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise OSError("spawn failed")
+
+    monkeypatch.setattr("symphony.agent_runner.harness.run_hook", fail_run_hook)
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "hook_error"
+
+    asyncio.run(run_test())
+
+    assert f"event=hook_started hook={hook_name}" in caplog.text
+    assert f"event=hook_failed hook={hook_name}" in caplog.text
+    assert "message=\"Hook '" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+
+
+def test_run_issue_attempt_emits_stderr_diagnostic_events(tmp_path: Path) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stderr",
+        log_path=tmp_path / "messages.jsonl",
+    )
+
+    async def run_test() -> None:
+        events: list[AgentRuntimeEvent] = []
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([]),
+            on_event=lambda event: collect_events(events, event),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "response_error"
+        assert any(
+            event.event == "stderr_diagnostic" and event.payload == {"line": "stderr noise"}
+            for event in events
+        )
+
+    asyncio.run(run_test())
+
+
+def test_run_issue_attempt_skips_stderr_callback_without_event_listener(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=tmp_path / "messages.jsonl",
+    )
+    captured: dict[str, object | None] = {}
+
+    async def fake_start_app_server_session(**kwargs: object) -> object:
+        captured["stderr_callback"] = kwargs.get("stderr_callback")
+        raise AppServerStartupError("could not start")
+
+    monkeypatch.setattr(harness_module, "start_app_server_session", fake_start_app_server_session)
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+            on_event=None,
+        )
+        assert result.status == "failed"
+        assert result.error_code == "app_server_startup_error"
+
+    asyncio.run(run_test())
+
+    assert captured["stderr_callback"] is None
 
 
 def test_run_issue_attempt_maps_stalled_turns(tmp_path: Path) -> None:
