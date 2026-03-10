@@ -21,8 +21,11 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 - [x] 2026-03-10 10:16Z: Completed the Milestone 2 review/fix loop: prompt rendering now fails before workspace hooks run, workspace resolution versus preparation failures log distinct events, usage fallthrough semantics are documented and covered, and prompt rendering reuses a shared Jinja environment.
 - [x] 2026-03-10 10:16Z: Verified Milestone 2 with focused backend tests: `uv run pytest apps/api/tests/unit/agent_runner/test_events.py apps/api/tests/unit/agent_runner/test_prompting.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/workspace/test_manager.py apps/api/tests/unit/orchestrator/test_core.py -q` -> `77 passed in 9.55s`.
 - [x] 2026-03-10 10:05Z: Re-ran repository quality gates after Milestone 2: `make lint` passed, `make typecheck` passed, and `make test` passed (`200 passed in 15.74s` for backend pytest; frontend Vitest exited `0` with `--passWithNoTests`).
-- [ ] Implement Milestone 3: restart recovery persistence and workflow-configurable observability settings.
-- [ ] Run focused backend checks after each milestone, then run `make lint`, `make typecheck`, and `make test`, and update this document’s `Outcomes & Retrospective` section with the exact results.
+- [x] 2026-03-10 11:04Z: Implemented Milestone 3: added workflow-configurable observability paths, file-backed restart recovery persistence for running/retry state, recovery-driven retry reconstruction with preserved prior session metadata, and focused backend coverage for the restart recovery paths and workflow-configured observability reload behavior.
+- [x] 2026-03-10 11:04Z: Completed the Milestone 3 review/fix loop: recovery persistence now imports and builds retry rows correctly, focused recovery tests write to the effective workflow-configured recovery path, and the ExecPlan records the actual validation result for this milestone.
+- [x] 2026-03-10 11:04Z: Verified Milestone 3 with focused backend tests: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/management/test_run_orchestrator.py -q` -> `71 passed in 4.20s`.
+- [x] 2026-03-10 11:15Z: Closed a follow-up Milestone 3 recovery race from the review loop: worker exit no longer publishes an empty recovery snapshot between removing a running row and scheduling its retry, and the new regression test `uv run pytest apps/api/tests/unit/orchestrator/test_core.py -q -k worker_exit_persists_retry_without_empty_recovery_gap -vv` passed (`1 passed, 37 deselected in 0.04s`).
+- [x] 2026-03-10 11:46Z: Re-ran repository quality gates after Milestone 3 and the follow-up test-snapshot fixes: `make lint` passed, `make typecheck` passed, and `make test` passed (`211 passed in 15.70s` for backend pytest; frontend Vitest exited `0` with `--passWithNoTests`).
 
 ## Surprises & Discoveries
 
@@ -58,14 +61,20 @@ When this plan is complete, an operator will be able to start the orchestrator, 
 
 ## Outcomes & Retrospective
 
-Milestones 1 and 2 are complete. The implementation now emits stable `key=value` logs for startup validation, tracker fetch/refresh failures, retry scheduling, worker exit paths, workspace hook lifecycle/failures, startup terminal cleanup, app-server `stderr` diagnostics, prompt template failures, and workspace preparation failures. The worker prep path now removes `tmp` and `.elixir_ls` before each attempt, prompt template syntax versus render failures are distinguishable in both tests and logs, and session token accounting only accepts event-defined absolute totals while ignoring delta-only telemetry.
+Milestones 1, 2, and 3 are complete. The implementation now emits stable `key=value` logs for startup validation, tracker fetch/refresh failures, retry scheduling, worker exit paths, workspace hook lifecycle/failures, startup terminal cleanup, app-server `stderr` diagnostics, prompt template failures, workspace preparation failures, and recovery-load failures. The worker prep path now removes `tmp` and `.elixir_ls` before each attempt, prompt template syntax versus render failures are distinguishable in both tests and logs, session token accounting only accepts event-defined absolute totals while ignoring delta-only telemetry, and restart recovery persists retry/running state with prior session metadata while letting workflow front matter choose future snapshot, refresh-request, and recovery file paths.
 
 Validation so far:
 
 - Focused Milestone 1 suite passed: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/agent_runner/test_client.py apps/api/tests/unit/workspace/test_hooks.py apps/api/tests/unit/management/test_run_orchestrator.py -q` -> `69 passed in 11.61s`.
 - Focused Milestone 2 suite passed after the review/fix loop: `uv run pytest apps/api/tests/unit/agent_runner/test_events.py apps/api/tests/unit/agent_runner/test_prompting.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/workspace/test_manager.py apps/api/tests/unit/orchestrator/test_core.py -q` -> `77 passed in 9.55s`.
+- Focused Milestone 3 suite passed after the review/fix loop: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/management/test_run_orchestrator.py -q` -> `71 passed in 4.20s`.
+- Follow-up Milestone 3 recovery regression passed: `uv run pytest apps/api/tests/unit/orchestrator/test_core.py -q -k worker_exit_persists_retry_without_empty_recovery_gap -vv` -> `1 passed, 37 deselected in 0.04s`.
 - Repository gates passed after Milestone 2: `make lint`, `make typecheck`, and `make test`.
 - `make test` details after Milestone 2: backend `pytest` -> `200 passed in 15.74s`; frontend `vitest run --passWithNoTests` exited `0`.
+- Repository gates passed after Milestone 3: `make lint`, `make typecheck`, and `make test`.
+- `make test` details after Milestone 3: backend `pytest` -> `211 passed in 15.70s`; frontend `vitest run --passWithNoTests` exited `0`.
+
+The plan is now closed at the repository quality-gate level. Remaining follow-up work, if any, belongs in a new ExecPlan or in `docs/SPEC_GAPS.md`, not as unfinished Milestone 3 carryover.
 
 Success for the remaining plan still means `docs/SPEC_GAPS.md` can be updated so every current item is either removed or marked fixed, the backend test surface proves each behavior explicitly, and operators can verify the new behavior from logs and persisted runtime state without attaching a debugger. If later implementation reveals a gap that deserves its own follow-on project, capture it here and in `docs/SPEC_GAPS.md` rather than letting it disappear into code comments.
 

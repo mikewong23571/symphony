@@ -6,12 +6,14 @@ import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from symphony.agent_runner import AgentRuntimeEvent, AttemptResult
 from symphony.agent_runner.events import UsageSnapshot
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
+    get_runtime_issue_snapshot,
     get_runtime_refresh_request_path,
     get_runtime_snapshot_path,
     queue_runtime_refresh_request,
@@ -84,31 +86,46 @@ def build_config(
     before_remove: str | None = None,
     stall_timeout_ms: int = 300_000,
     poll_interval_ms: int = 60_000,
+    snapshot_path: Path | None = None,
+    refresh_request_path: Path | None = None,
+    recovery_path: Path | None = None,
+    snapshot_max_age_seconds: int | None = None,
 ) -> ServiceConfig:
-    return build_service_config(
-        WorkflowDefinition(
-            config={
-                "tracker": {
-                    "kind": "linear",
-                    "api_key": "linear-token",
-                    "project_slug": "symphony",
-                    "active_states": ["Todo", "In Progress"],
-                    "terminal_states": ["Done"],
-                },
-                "workspace": {"root": str(tmp_path / "workspaces")},
-                "polling": {"interval_ms": poll_interval_ms},
-                "agent": {"max_concurrent_agents": 2, "max_retry_backoff_ms": 120_000},
-                "codex": {
-                    "command": "codex app-server",
-                    "turn_timeout_ms": 1_000,
-                    "read_timeout_ms": 1_000,
-                    "stall_timeout_ms": stall_timeout_ms,
-                },
-                "hooks": {"before_remove": before_remove},
-            },
-            prompt_template="Prompt body",
-        )
-    )
+    effective_recovery_path = recovery_path or (tmp_path / "runtime-recovery.json")
+    config: dict[str, object] = {
+        "tracker": {
+            "kind": "linear",
+            "api_key": "linear-token",
+            "project_slug": "symphony",
+            "active_states": ["Todo", "In Progress"],
+            "terminal_states": ["Done"],
+        },
+        "workspace": {"root": str(tmp_path / "workspaces")},
+        "polling": {"interval_ms": poll_interval_ms},
+        "agent": {"max_concurrent_agents": 2, "max_retry_backoff_ms": 120_000},
+        "codex": {
+            "command": "codex app-server",
+            "turn_timeout_ms": 1_000,
+            "read_timeout_ms": 1_000,
+            "stall_timeout_ms": stall_timeout_ms,
+        },
+        "hooks": {"before_remove": before_remove},
+    }
+    observability: dict[str, object] = {}
+    if snapshot_path is not None:
+        observability["snapshot_path"] = str(snapshot_path)
+    if refresh_request_path is not None:
+        observability["refresh_request_path"] = str(refresh_request_path)
+    if recovery_path is not None:
+        observability["recovery_path"] = str(recovery_path)
+    else:
+        observability["recovery_path"] = str(effective_recovery_path)
+    if snapshot_max_age_seconds is not None:
+        observability["snapshot_max_age_seconds"] = snapshot_max_age_seconds
+    if observability:
+        config["observability"] = observability
+
+    return build_service_config(WorkflowDefinition(config=config, prompt_template="Prompt body"))
 
 
 def write_runtime_workflow(
@@ -118,8 +135,24 @@ def write_runtime_workflow(
     poll_interval_ms: int = 60_000,
     max_concurrent_agents: int = 2,
     workspace_root: Path | None = None,
+    snapshot_path: Path | None = None,
+    refresh_request_path: Path | None = None,
+    recovery_path: Path | None = None,
+    snapshot_max_age_seconds: int | None = None,
 ) -> Path:
     root = workspace_root or (path.parent / "workspaces")
+    effective_recovery_path = recovery_path or (path.parent / ".runtime" / "recovery.json")
+    # Recovery is always configured in this helper so workflow-based tests exercise the
+    # repository-owned observability path defaults and reload behavior consistently.
+    observability_lines = ["observability:"]
+    if snapshot_path is not None:
+        observability_lines.append(f"  snapshot_path: {snapshot_path}")
+    if refresh_request_path is not None:
+        observability_lines.append(f"  refresh_request_path: {refresh_request_path}")
+    observability_lines.append(f"  recovery_path: {effective_recovery_path}")
+    if snapshot_max_age_seconds is not None:
+        observability_lines.append(f"  snapshot_max_age_seconds: {snapshot_max_age_seconds}")
+    observability_block = "".join(f"{line}\n" for line in observability_lines)
     path.write_text(
         (
             "---\n"
@@ -133,6 +166,7 @@ def write_runtime_workflow(
             f"  max_concurrent_agents: {max_concurrent_agents}\n"
             "workspace:\n"
             f"  root: {root}\n"
+            f"{observability_block}"
             "codex:\n"
             "  command: codex app-server\n"
             "  turn_timeout_ms: 1000\n"
@@ -1654,6 +1688,397 @@ def test_orchestrator_shutdown_keeps_newer_snapshot_from_other_process(tmp_path:
                 await asyncio.gather(worker_task, return_exceptions=True)
             if monitor_task is not None:
                 await asyncio.gather(monitor_task, return_exceptions=True)
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_recovers_persisted_retry_entries(tmp_path: Path) -> None:
+    issue = build_issue(issue_id="issue-retry", identifier="SYM-RETRY")
+    config = build_config(tmp_path=tmp_path)
+    recovery_path = config.observability.recovery_path
+    assert recovery_path is not None
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    due_at = datetime.now(UTC) + timedelta(seconds=20)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "running": [],
+                "retrying": [
+                    {
+                        "issue_id": issue.id,
+                        "issue_identifier": issue.identifier,
+                        "attempt": 2,
+                        "due_at": due_at.isoformat().replace("+00:00", "Z"),
+                        "workspace_path": str(tmp_path / "workspaces" / issue.identifier),
+                        "error": "retry poll failed",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+
+            retry_entry = orchestrator.state.retry_attempts[issue.id]
+            assert retry_entry.attempt == 2
+            assert retry_entry.error == "retry poll failed"
+            assert abs((retry_entry.due_at - due_at).total_seconds()) < 2
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            assert snapshot["retrying"][0]["issue_id"] == issue.id
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_recovers_overdue_retry_entries_immediately(tmp_path: Path) -> None:
+    issue = build_issue(issue_id="issue-overdue", identifier="SYM-OVERDUE")
+    config = build_config(tmp_path=tmp_path)
+    recovery_path = config.observability.recovery_path
+    assert recovery_path is not None
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "running": [],
+                "retrying": [
+                    {
+                        "issue_id": issue.id,
+                        "issue_identifier": issue.identifier,
+                        "attempt": 1,
+                        "due_at": (datetime.now(UTC) - timedelta(seconds=5))
+                        .isoformat()
+                        .replace("+00:00", "Z"),
+                        "workspace_path": str(tmp_path / "workspaces" / issue.identifier),
+                        "error": "retry me",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            before_startup = datetime.now(UTC)
+            await orchestrator.startup()
+
+            retry_entry = orchestrator.state.retry_attempts[issue.id]
+            assert retry_entry.due_at <= before_startup + timedelta(seconds=1)
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_converts_recovered_running_entries_into_retry_rows(tmp_path: Path) -> None:
+    issue = build_issue(issue_id="issue-running", identifier="SYM-RUN")
+    config = build_config(tmp_path=tmp_path)
+    recovery_path = config.observability.recovery_path
+    assert recovery_path is not None
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "running": [
+                    {
+                        "issue_id": issue.id,
+                        "issue_identifier": issue.identifier,
+                        "attempt": 2,
+                        "workspace_path": str(tmp_path / "workspaces" / issue.identifier),
+                        "started_at": "2026-03-10T10:00:00Z",
+                        "session": {
+                            "session_id": "thread-1-turn-2",
+                            "thread_id": "thread-1",
+                            "turn_id": "turn-2",
+                            "turn_count": 7,
+                            "last_event": "notification",
+                            "last_event_at": "2026-03-10T10:03:00Z",
+                            "tokens": {
+                                "input_tokens": 100,
+                                "output_tokens": 40,
+                                "total_tokens": 140,
+                            },
+                            "codex_app_server_pid": 4321,
+                        },
+                    }
+                ],
+                "retrying": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+
+            snapshot = orchestrator.get_runtime_snapshot()
+            retry_row = snapshot["retrying"][0]
+            assert retry_row["issue_id"] == issue.id
+            assert retry_row["attempt"] == 3
+            assert retry_row["error"] == "orchestrator_restarted"
+            assert retry_row["prior_session"] == {
+                "session_id": "thread-1-turn-2",
+                "thread_id": "thread-1",
+                "turn_id": "turn-2",
+                "turn_count": 7,
+                "last_event": "notification",
+                "last_event_at": "2026-03-10T10:03:00Z",
+                "tokens": {
+                    "input_tokens": 100,
+                    "output_tokens": 40,
+                    "total_tokens": 140,
+                },
+                "codex_app_server_pid": 4321,
+            }
+
+            issue_snapshot = get_runtime_issue_snapshot(issue.identifier)
+            assert issue_snapshot["retry"]["prior_session"] == retry_row["prior_session"]
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_worker_exit_persists_retry_without_empty_recovery_gap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    issue = build_issue(issue_id="issue-gap", identifier="SYM-GAP")
+    config = build_config(tmp_path=tmp_path)
+    published_recovery_payloads: list[dict[str, object]] = []
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=2,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=datetime.now(UTC) - timedelta(seconds=3),
+            turn_count=4,
+            session_id="thread-1-turn-4",
+            thread_id="thread-1",
+            turn_id="turn-4",
+            codex_app_server_pid=4321,
+            last_codex_event="turn_completed",
+            last_codex_timestamp=datetime(2026, 3, 10, 10, 3, tzinfo=UTC),
+            codex_input_tokens=100,
+            codex_output_tokens=40,
+            codex_total_tokens=140,
+        )
+
+        def record_recovery_publish(state: object) -> Path:
+            assert hasattr(state, "to_payload")
+            payload = cast(Any, state).to_payload()
+            assert isinstance(payload, dict)
+            published_recovery_payloads.append(payload)
+            return tmp_path / "runtime-recovery.json"
+
+        monkeypatch.setattr(
+            "symphony.orchestrator.core.publish_recovery_state",
+            record_recovery_publish,
+        )
+
+        try:
+            await orchestrator._handle_worker_exit(
+                issue.id,
+                AttemptResult(
+                    status="failed",
+                    issue=issue,
+                    attempt=2,
+                    workspace_path=tmp_path / "workspaces" / issue.identifier,
+                    session_id="thread-1-turn-4",
+                    thread_id="thread-1",
+                    turn_id="turn-4",
+                    turns_run=4,
+                    error_code="worker_runner_error",
+                    message="worker failed",
+                ),
+            )
+
+            assert len(published_recovery_payloads) == 1
+            assert published_recovery_payloads[0]["running"] == []
+            assert published_recovery_payloads[0]["retrying"] == [
+                {
+                    "attempt": 3,
+                    "due_at": orchestrator.get_runtime_snapshot()["retrying"][0]["due_at"],
+                    "error": "worker_runner_error",
+                    "issue_id": issue.id,
+                    "issue_identifier": issue.identifier,
+                    "prior_session": {
+                        "codex_app_server_pid": 4321,
+                        "last_event": "turn_completed",
+                        "last_event_at": "2026-03-10T10:03:00Z",
+                        "session_id": "thread-1-turn-4",
+                        "thread_id": "thread-1",
+                        "tokens": {
+                            "input_tokens": 100,
+                            "output_tokens": 40,
+                            "total_tokens": 140,
+                        },
+                        "turn_count": 4,
+                        "turn_id": "turn-4",
+                    },
+                    "workspace_path": str(tmp_path / "workspaces" / issue.identifier),
+                }
+            ]
+        finally:
+            await orchestrator.aclose()
+            worker_task.cancel()
+            await asyncio.gather(worker_task, return_exceptions=True)
+            await asyncio.gather(monitor_task, return_exceptions=True)
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_tolerates_corrupt_recovery_files(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    recovery_path = config.observability.recovery_path
+    assert recovery_path is not None
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text("{not json", encoding="utf-8")
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+            assert orchestrator.state.retry_attempts == {}
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=recovery_load_failed error_code=recovery_state_error" in caplog.text
+
+
+def test_orchestrator_rejects_recovery_files_with_non_string_session_ids(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    recovery_path = config.observability.recovery_path
+    assert recovery_path is not None
+    recovery_path.parent.mkdir(parents=True, exist_ok=True)
+    recovery_path.write_text(
+        json.dumps(
+            {
+                "running": [
+                    {
+                        "issue_id": "issue-1",
+                        "issue_identifier": "SYM-1",
+                        "attempt": 1,
+                        "workspace_path": str(tmp_path / "workspaces" / "SYM-1"),
+                        "started_at": "2026-03-10T10:00:00Z",
+                        "session": {
+                            "session_id": 42,
+                            "thread_id": "thread-1",
+                            "turn_id": "turn-1",
+                            "turn_count": 1,
+                            "last_event": "notification",
+                            "last_event_at": "2026-03-10T10:01:00Z",
+                            "tokens": {
+                                "input_tokens": 1,
+                                "output_tokens": 2,
+                                "total_tokens": 3,
+                            },
+                            "codex_app_server_pid": 1234,
+                        },
+                    }
+                ],
+                "retrying": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        try:
+            await orchestrator.startup()
+            assert orchestrator.state.retry_attempts == {}
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+    assert "event=recovery_load_failed error_code=recovery_state_error" in caplog.text
+
+
+def test_orchestrator_applies_workflow_configured_observability_paths_on_reload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS", raising=False)
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        snapshot_path=tmp_path / "runtime-a" / "snapshot.json",
+        refresh_request_path=tmp_path / "runtime-a" / "refresh.json",
+        recovery_path=tmp_path / "runtime-a" / "recovery.json",
+        snapshot_max_age_seconds=45,
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path, cwd=tmp_path, env={})
+    config = workflow_runtime.load_initial()
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            tracker_client=FakeTrackerClient(),
+            workflow_runtime=workflow_runtime,
+        )
+        try:
+            await orchestrator.startup()
+
+            snapshot_path_a = tmp_path / "runtime-a" / "snapshot.json"
+            refresh_path_a = tmp_path / "runtime-a" / "refresh.json"
+            recovery_path_a = tmp_path / "runtime-a" / "recovery.json"
+            assert snapshot_path_a.is_file()
+            assert recovery_path_a.is_file()
+            queue_runtime_refresh_request()
+            assert refresh_path_a.is_file()
+
+            write_runtime_workflow(
+                workflow_path,
+                snapshot_path=tmp_path / "runtime-b" / "snapshot.json",
+                refresh_request_path=tmp_path / "runtime-b" / "refresh.json",
+                recovery_path=tmp_path / "runtime-b" / "recovery.json",
+                snapshot_max_age_seconds=90,
+            )
+            await orchestrator._reload_workflow_config_if_needed()
+            orchestrator._refresh_runtime_snapshot()
+
+            snapshot_path_b = tmp_path / "runtime-b" / "snapshot.json"
+            refresh_path_b = tmp_path / "runtime-b" / "refresh.json"
+            recovery_path_b = tmp_path / "runtime-b" / "recovery.json"
+            assert snapshot_path_b.is_file()
+            assert recovery_path_b.is_file()
+            queue_runtime_refresh_request()
+            assert refresh_path_b.is_file()
+            assert orchestrator.config.observability.snapshot_max_age_seconds == 90
+        finally:
+            await orchestrator.aclose()
 
     asyncio.run(run_test())
 

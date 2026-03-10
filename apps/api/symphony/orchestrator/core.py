@@ -20,12 +20,26 @@ from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     clear_runtime_snapshot_file,
     clear_runtime_snapshot_provider,
+    configure_runtime_observability,
     consume_runtime_refresh_request,
     get_runtime_snapshot_refresh_interval_seconds,
     publish_runtime_snapshot,
     register_runtime_snapshot_provider,
 )
-from symphony.observability.snapshots import isoformat_utc, refresh_runtime_snapshot
+from symphony.observability.snapshots import (
+    isoformat_utc,
+    parse_snapshot_timestamp,
+    refresh_runtime_snapshot,
+)
+from symphony.orchestrator.recovery import (
+    RecoveryRetryState,
+    RecoveryRunningState,
+    RecoverySessionState,
+    RecoveryState,
+    RecoveryStateError,
+    load_recovery_state,
+    publish_recovery_state,
+)
 from symphony.tracker import Issue, LinearTrackerClient
 from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
 from symphony.workspace import WorkspaceError, WorkspaceManager
@@ -68,6 +82,7 @@ class RetryEntry:
     workspace_path: Path
     timer_handle: asyncio.Task[None] | None
     error: str | None
+    prior_session: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -144,6 +159,7 @@ class Orchestrator:
         self.worker_runner = worker_runner
         self.workspace_manager = workspace_manager or WorkspaceManager(config.workspace.root)
         self.service_info = service_info or ServiceInfo(name="symphony", version="0.1.0")
+        self._configure_runtime_observability(config)
         self.state = OrchestratorState(
             poll_interval_ms=config.polling.interval_ms,
             max_concurrent_agents=config.agent.max_concurrent_agents,
@@ -172,6 +188,7 @@ class Orchestrator:
         if self._workflow_runtime is None:
             validate_dispatch_config(self.config)
         await self._startup_terminal_workspace_cleanup()
+        await self._recover_runtime_state()
         if self._workflow_runtime is not None:
             self._workflow_event_loop = asyncio.get_running_loop()
             if not self._workflow_listener_registered:
@@ -598,12 +615,14 @@ class Orchestrator:
         cleanup_workspace_path: Path | None = None
         retry_schedule: RetrySchedule | None = None
         snapshot_needs_refresh = False
+        prior_session: dict[str, Any] | None = None
 
         async with self._lock:
             running_entry = self.state.running.pop(issue_id, None)
             self._cancel_reasons.pop(issue_id, None)
             if running_entry is None:
                 return
+            prior_session = _running_entry_session_snapshot(running_entry)
 
             runtime_seconds = (datetime.now(UTC) - running_entry.started_at).total_seconds()
             self.state.codex_totals.input_tokens += running_entry.codex_input_tokens
@@ -659,7 +678,10 @@ class Orchestrator:
                 "workspace_path": result.workspace_path,
             },
         )
-        if snapshot_needs_refresh:
+        # Publish immediately only when this exit does not transition into retry state.
+        # For running->retry exits, `_schedule_retry(...)` performs the durable snapshot/recovery
+        # write after the retry row exists, which avoids a transient empty recovery file.
+        if snapshot_needs_refresh and retry_schedule is None:
             self._refresh_runtime_snapshot()
 
         if cleanup_identifier is not None:
@@ -676,6 +698,7 @@ class Orchestrator:
                 identifier=retry_schedule.identifier,
                 attempt=retry_schedule.attempt,
                 delay_ms=retry_schedule.delay_ms,
+                prior_session=prior_session,
                 error=retry_schedule.error,
             )
 
@@ -687,6 +710,7 @@ class Orchestrator:
         attempt: int,
         delay_ms: int,
         workspace_path: Path | None = None,
+        prior_session: dict[str, Any] | None = None,
         error: str | None,
         refresh_snapshot: bool = True,
     ) -> None:
@@ -710,6 +734,9 @@ class Orchestrator:
             or _best_effort_workspace_path(self.workspace_manager, identifier),
             timer_handle=timer_handle,
             error=error,
+            prior_session=prior_session
+            if prior_session is not None
+            else (existing_entry.prior_session if existing_entry is not None else None),
         )
         self.state.claimed.add(issue_id)
         log_event(
@@ -749,6 +776,7 @@ class Orchestrator:
                 attempt=retry_entry.attempt,
                 delay_ms=self.state.poll_interval_ms,
                 workspace_path=retry_entry.workspace_path,
+                prior_session=retry_entry.prior_session,
                 error=self._workflow_runtime_error_message(),
             )
             return
@@ -775,6 +803,7 @@ class Orchestrator:
                 attempt=next_attempt,
                 delay_ms=self._compute_failure_retry_delay(next_attempt),
                 workspace_path=retry_entry.workspace_path,
+                prior_session=retry_entry.prior_session,
                 error="retry poll failed",
             )
             return
@@ -803,6 +832,7 @@ class Orchestrator:
                     attempt=retry_entry.attempt,
                     delay_ms=CONTINUATION_RETRY_DELAY_MS,
                     workspace_path=retry_entry.workspace_path,
+                    prior_session=retry_entry.prior_session,
                     error="no available orchestrator slots",
                     refresh_snapshot=False,
                 )
@@ -1014,6 +1044,7 @@ class Orchestrator:
         with self._runtime_snapshot_lock:
             self._runtime_snapshot = snapshot
         self._publish_runtime_snapshot_best_effort(snapshot)
+        self._publish_recovery_state_best_effort()
 
     def _get_runtime_snapshot_refresh_interval_seconds(self) -> float:
         return get_runtime_snapshot_refresh_interval_seconds(
@@ -1042,6 +1073,15 @@ class Orchestrator:
                 exc_info=True,
             )
 
+    def _publish_recovery_state_best_effort(self) -> None:
+        try:
+            publish_recovery_state(self._build_recovery_state())
+        except RecoveryStateError:
+            logger.warning(
+                "Recovery state publish failed; continuing with in-memory orchestrator state only.",
+                exc_info=True,
+            )
+
     def _consume_runtime_refresh_request_best_effort(self) -> bool:
         try:
             return consume_runtime_refresh_request() is not None
@@ -1052,6 +1092,82 @@ class Orchestrator:
             )
             return False
 
+    async def _recover_runtime_state(self) -> None:
+        try:
+            recovery_state = await asyncio.to_thread(load_recovery_state)
+        except RecoveryStateError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "recovery_load_failed",
+                fields={
+                    "error_code": exc.code,
+                    "message": exc.message,
+                },
+            )
+            return
+
+        if recovery_state is None:
+            return
+
+        now = datetime.now(UTC)
+        for retry_entry in recovery_state.retrying:
+            remaining_delay_ms = max(int((retry_entry.due_at - now).total_seconds() * 1000), 0)
+            await self._schedule_retry(
+                issue_id=retry_entry.issue_id,
+                identifier=retry_entry.issue_identifier,
+                attempt=retry_entry.attempt,
+                delay_ms=remaining_delay_ms,
+                workspace_path=retry_entry.workspace_path,
+                prior_session=(
+                    retry_entry.prior_session.to_snapshot()
+                    if retry_entry.prior_session is not None
+                    else None
+                ),
+                error=retry_entry.error,
+                refresh_snapshot=False,
+            )
+
+        for running_entry in recovery_state.running:
+            next_attempt = 1 if running_entry.attempt is None else running_entry.attempt + 1
+            await self._schedule_retry(
+                issue_id=running_entry.issue_id,
+                identifier=running_entry.issue_identifier,
+                attempt=next_attempt,
+                delay_ms=0,
+                workspace_path=running_entry.workspace_path,
+                prior_session=running_entry.session.to_snapshot(),
+                error="orchestrator_restarted",
+                refresh_snapshot=False,
+            )
+
+        if recovery_state.running or recovery_state.retrying:
+            self._refresh_runtime_snapshot()
+
+    def _build_recovery_state(self) -> RecoveryState:
+        running_rows = tuple(
+            RecoveryRunningState(
+                issue_id=entry.issue.id,
+                issue_identifier=entry.issue.identifier,
+                attempt=entry.attempt,
+                workspace_path=entry.workspace_path,
+                started_at=entry.started_at,
+                session=_recovery_session_from_running_entry(entry),
+            )
+            for entry in sorted(
+                self.state.running.values(),
+                key=lambda value: (value.started_at, value.issue.identifier),
+            )
+        )
+        retry_rows = tuple(
+            _recovery_retry_from_entry(entry)
+            for entry in sorted(
+                self.state.retry_attempts.values(),
+                key=lambda value: (value.due_at, value.identifier, value.issue_id),
+            )
+        )
+        return RecoveryState(running=running_rows, retrying=retry_rows)
+
     async def _reload_workflow_config_if_needed(self) -> None:
         if self._workflow_runtime is None:
             return
@@ -1059,9 +1175,18 @@ class Orchestrator:
         await asyncio.to_thread(self._workflow_runtime.reload_if_changed)
         self._sync_workflow_runtime_state(refresh_snapshot=False)
 
+    def _configure_runtime_observability(self, config: ServiceConfig) -> None:
+        configure_runtime_observability(
+            snapshot_path=config.observability.snapshot_path,
+            refresh_request_path=config.observability.refresh_request_path,
+            recovery_path=config.observability.recovery_path,
+            snapshot_max_age_seconds=config.observability.snapshot_max_age_seconds,
+        )
+
     def _apply_runtime_config(self, config: ServiceConfig) -> None:
         previous_config = self.config
         self.config = config
+        self._configure_runtime_observability(config)
         self.state.poll_interval_ms = config.polling.interval_ms
         self.state.max_concurrent_agents = config.agent.max_concurrent_agents
 
@@ -1124,6 +1249,9 @@ class Orchestrator:
                 "attempt": entry.attempt,
                 "state": entry.issue.state,
                 "session_id": entry.session_id,
+                "thread_id": entry.thread_id,
+                "turn_id": entry.turn_id,
+                "codex_app_server_pid": entry.codex_app_server_pid,
                 "turn_count": entry.turn_count,
                 "last_event": entry.last_codex_event,
                 "last_message": entry.last_codex_message or "",
@@ -1143,14 +1271,7 @@ class Orchestrator:
         ]
 
         retry_rows = [
-            {
-                "issue_id": entry.issue_id,
-                "issue_identifier": entry.identifier,
-                "attempt": entry.attempt,
-                "due_at": isoformat_utc(entry.due_at),
-                "error": entry.error,
-                "workspace_path": str(entry.workspace_path),
-            }
+            _build_retry_snapshot_row(entry)
             for entry in sorted(
                 self.state.retry_attempts.values(),
                 key=lambda value: (value.due_at, value.identifier, value.issue_id),
@@ -1366,6 +1487,85 @@ def _jsonify_value(value: Any) -> Any:
     return str(value)
 
 
+def _running_entry_session_snapshot(running_entry: RunningEntry) -> dict[str, Any] | None:
+    session = _recovery_session_from_running_entry(running_entry)
+    if (
+        session.session_id is None
+        and session.thread_id is None
+        and session.turn_id is None
+        and session.last_event is None
+        and session.last_event_at is None
+        and session.codex_app_server_pid is None
+        and session.turn_count == 0
+        and session.input_tokens == 0
+        and session.output_tokens == 0
+        and session.total_tokens == 0
+    ):
+        return None
+    return session.to_snapshot()
+
+
+def _recovery_session_from_running_entry(running_entry: RunningEntry) -> RecoverySessionState:
+    return RecoverySessionState(
+        session_id=running_entry.session_id,
+        thread_id=running_entry.thread_id,
+        turn_id=running_entry.turn_id,
+        turn_count=running_entry.turn_count,
+        last_event=running_entry.last_codex_event,
+        last_event_at=running_entry.last_codex_timestamp,
+        input_tokens=running_entry.codex_input_tokens,
+        output_tokens=running_entry.codex_output_tokens,
+        total_tokens=running_entry.codex_total_tokens,
+        codex_app_server_pid=running_entry.codex_app_server_pid,
+    )
+
+
+def _recovery_retry_from_entry(retry_entry: RetryEntry) -> RecoveryRetryState:
+    prior_session = None
+    if retry_entry.prior_session is not None:
+        prior_session = _recovery_session_from_snapshot(retry_entry.prior_session)
+    return RecoveryRetryState(
+        issue_id=retry_entry.issue_id,
+        issue_identifier=retry_entry.identifier,
+        attempt=retry_entry.attempt,
+        due_at=retry_entry.due_at,
+        workspace_path=retry_entry.workspace_path,
+        error=retry_entry.error,
+        prior_session=prior_session,
+    )
+
+
+def _recovery_session_from_snapshot(snapshot: dict[str, Any]) -> RecoverySessionState:
+    tokens = snapshot.get("tokens")
+    token_map = tokens if isinstance(tokens, dict) else {}
+    return RecoverySessionState(
+        session_id=_blank_to_none(_string_or_none(snapshot.get("session_id"))),
+        thread_id=_blank_to_none(_string_or_none(snapshot.get("thread_id"))),
+        turn_id=_blank_to_none(_string_or_none(snapshot.get("turn_id"))),
+        turn_count=_int_or_zero(snapshot.get("turn_count")),
+        last_event=_blank_to_none(_string_or_none(snapshot.get("last_event"))),
+        last_event_at=_datetime_or_none(snapshot.get("last_event_at")),
+        input_tokens=_int_or_zero(token_map.get("input_tokens")),
+        output_tokens=_int_or_zero(token_map.get("output_tokens")),
+        total_tokens=_int_or_zero(token_map.get("total_tokens")),
+        codex_app_server_pid=_int_or_none(snapshot.get("codex_app_server_pid")),
+    )
+
+
+def _build_retry_snapshot_row(retry_entry: RetryEntry) -> dict[str, Any]:
+    row = {
+        "issue_id": retry_entry.issue_id,
+        "issue_identifier": retry_entry.identifier,
+        "attempt": retry_entry.attempt,
+        "due_at": isoformat_utc(retry_entry.due_at),
+        "error": retry_entry.error,
+        "workspace_path": str(retry_entry.workspace_path),
+    }
+    if retry_entry.prior_session is not None:
+        row["prior_session"] = copy.deepcopy(retry_entry.prior_session)
+    return row
+
+
 def _workflow_runtime_snapshot(workflow_runtime: WorkflowRuntime | None) -> dict[str, Any] | None:
     if workflow_runtime is None:
         return None
@@ -1409,3 +1609,29 @@ def _blank_to_none(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _string_or_none(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    return value
+
+
+def _int_or_zero(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def _int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _datetime_or_none(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    return parse_snapshot_timestamp(value)

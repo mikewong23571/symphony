@@ -8,6 +8,7 @@ import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -18,9 +19,11 @@ from .snapshots import isoformat_utc, parse_snapshot_timestamp, refresh_runtime_
 RUNTIME_SNAPSHOT_PATH_ENV_VAR = "SYMPHONY_RUNTIME_SNAPSHOT_PATH"
 RUNTIME_SNAPSHOT_MAX_AGE_SECONDS_ENV_VAR = "SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS"
 RUNTIME_REFRESH_REQUEST_PATH_ENV_VAR = "SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH"
+RUNTIME_RECOVERY_PATH_ENV_VAR = "SYMPHONY_RUNTIME_RECOVERY_PATH"
 DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS = 120
 DEFAULT_RUNTIME_SNAPSHOT_FILENAME = "symphony-runtime-snapshot.json"
 DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME = "symphony-runtime-refresh-request.json"
+DEFAULT_RUNTIME_RECOVERY_FILENAME = "symphony-runtime-recovery.json"
 _RUNTIME_SNAPSHOT_SCOPE_MARKERS = ("pyproject.toml", ".git", "WORKFLOW.md")
 
 
@@ -36,8 +39,41 @@ class RuntimeIssueNotFoundError(RuntimeError):
     pass
 
 
+@dataclass(slots=True, frozen=True)
+class RuntimeObservabilityConfig:
+    snapshot_path: Path | None = None
+    refresh_request_path: Path | None = None
+    recovery_path: Path | None = None
+    snapshot_max_age_seconds: int = DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
+
+
 _provider_lock = threading.Lock()
 _provider: RuntimeSnapshotProvider | None = None
+_runtime_config_lock = threading.Lock()
+_runtime_observability_config = RuntimeObservabilityConfig()
+
+
+def configure_runtime_observability(
+    *,
+    snapshot_path: Path | None = None,
+    refresh_request_path: Path | None = None,
+    recovery_path: Path | None = None,
+    snapshot_max_age_seconds: int = DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS,
+) -> None:
+    normalized_max_age_seconds = max(int(snapshot_max_age_seconds), 1)
+    global _runtime_observability_config
+    with _runtime_config_lock:
+        _runtime_observability_config = RuntimeObservabilityConfig(
+            snapshot_path=snapshot_path,
+            refresh_request_path=refresh_request_path,
+            recovery_path=recovery_path,
+            snapshot_max_age_seconds=normalized_max_age_seconds,
+        )
+
+
+def get_runtime_observability_config() -> RuntimeObservabilityConfig:
+    with _runtime_config_lock:
+        return _runtime_observability_config
 
 
 def register_runtime_snapshot_provider(provider: RuntimeSnapshotProvider) -> None:
@@ -57,6 +93,9 @@ def get_runtime_snapshot_path() -> Path:
     configured_path = os.environ.get(RUNTIME_SNAPSHOT_PATH_ENV_VAR, "").strip()
     if configured_path:
         return Path(configured_path).expanduser()
+    runtime_config = get_runtime_observability_config()
+    if runtime_config.snapshot_path is not None:
+        return runtime_config.snapshot_path
     return _get_default_runtime_support_path(DEFAULT_RUNTIME_SNAPSHOT_FILENAME)
 
 
@@ -64,7 +103,20 @@ def get_runtime_refresh_request_path() -> Path:
     configured_path = os.environ.get(RUNTIME_REFRESH_REQUEST_PATH_ENV_VAR, "").strip()
     if configured_path:
         return Path(configured_path).expanduser()
+    runtime_config = get_runtime_observability_config()
+    if runtime_config.refresh_request_path is not None:
+        return runtime_config.refresh_request_path
     return _get_default_runtime_support_path(DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME)
+
+
+def get_runtime_recovery_path() -> Path:
+    configured_path = os.environ.get(RUNTIME_RECOVERY_PATH_ENV_VAR, "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    runtime_config = get_runtime_observability_config()
+    if runtime_config.recovery_path is not None:
+        return runtime_config.recovery_path
+    return _get_default_runtime_support_path(DEFAULT_RUNTIME_RECOVERY_FILENAME)
 
 
 def get_runtime_snapshot_refresh_interval_seconds(*, poll_interval_ms: int) -> float:
@@ -245,6 +297,9 @@ def get_runtime_issue_snapshot(issue_identifier: str) -> dict[str, Any]:
             "due_at": retry_row.get("due_at"),
             "error": retry_row.get("error"),
         }
+        prior_session = retry_row.get("prior_session")
+        if isinstance(prior_session, dict):
+            retry_details["prior_session"] = cast(dict[str, Any], prior_session)
 
     running_details = None
     if running_row is not None:
@@ -305,12 +360,12 @@ def _ensure_snapshot_is_fresh(snapshot: dict[str, Any], path: Path) -> None:
 def _get_runtime_snapshot_max_age_seconds() -> int:
     configured = os.environ.get(RUNTIME_SNAPSHOT_MAX_AGE_SECONDS_ENV_VAR, "").strip()
     if not configured:
-        return DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
+        return get_runtime_observability_config().snapshot_max_age_seconds
 
     try:
         value = int(configured)
     except ValueError:
-        return DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
+        return get_runtime_observability_config().snapshot_max_age_seconds
 
     return max(value, 1)
 

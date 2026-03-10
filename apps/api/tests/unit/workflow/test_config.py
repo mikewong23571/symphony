@@ -36,6 +36,10 @@ def test_build_service_config_applies_defaults() -> None:
     assert config.tracker.active_states == DEFAULT_ACTIVE_STATES
     assert config.tracker.terminal_states == DEFAULT_TERMINAL_STATES
     assert config.workspace.root == DEFAULT_WORKSPACE_ROOT
+    assert config.observability.snapshot_path is None
+    assert config.observability.refresh_request_path is None
+    assert config.observability.recovery_path is None
+    assert config.observability.snapshot_max_age_seconds == 120
     assert config.server.port is None
     assert config.hooks.timeout_ms == DEFAULT_HOOK_TIMEOUT_MS
     assert config.agent.max_turns == DEFAULT_MAX_TURNS
@@ -95,6 +99,27 @@ def test_build_service_config_expands_workspace_root_from_env_and_home() -> None
     )
 
     assert config.workspace.root == Path.home() / "symphony" / "workspaces"
+
+
+def test_build_service_config_parses_observability_paths_and_max_age() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "observability": {
+                    "snapshot_path": "~/runtime/snapshot.json",
+                    "refresh_request_path": "$REFRESH_REQUEST_PATH",
+                    "recovery_path": "var/recovery.json",
+                    "snapshot_max_age_seconds": "45",
+                }
+            }
+        ),
+        env={"REFRESH_REQUEST_PATH": "~/runtime/refresh.json"},
+    )
+
+    assert config.observability.snapshot_path == Path.home() / "runtime" / "snapshot.json"
+    assert config.observability.refresh_request_path == Path.home() / "runtime" / "refresh.json"
+    assert config.observability.recovery_path == Path("var/recovery.json")
+    assert config.observability.snapshot_max_age_seconds == 45
 
 
 def test_build_service_config_parses_states_and_agent_limits() -> None:

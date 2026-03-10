@@ -32,6 +32,21 @@ server:
 """
 
 
+WORKFLOW_WITH_OBSERVABILITY = """---
+tracker:
+  kind: linear
+  api_key: linear-token
+  project_slug: symphony
+observability:
+  snapshot_path: .runtime/snapshot.json
+  refresh_request_path: .runtime/refresh.json
+  recovery_path: .runtime/recovery.json
+  snapshot_max_age_seconds: 45
+---
+# Prompt body
+"""
+
+
 class FakeHTTPServer:
     def __init__(self, *, url: str = "http://127.0.0.1:43123/") -> None:
         self.url = url
@@ -246,6 +261,48 @@ def test_run_orchestrator_cli_port_overrides_workflow_port(
 
     assert server_calls == [("127.0.0.1", 0)]
     assert fake_server.close_calls == 1
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+
+
+def test_run_orchestrator_loads_workflow_observability_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_OBSERVABILITY)
+    stdout = StringIO()
+    calls: list[str] = []
+    loaded_paths: dict[str, object] = {}
+
+    async def capture_run_once(self: CommandOrchestrator) -> None:
+        loaded_paths["snapshot_path"] = self.config.observability.snapshot_path
+        loaded_paths["refresh_request_path"] = self.config.observability.refresh_request_path
+        loaded_paths["recovery_path"] = self.config.observability.recovery_path
+        loaded_paths["snapshot_max_age_seconds"] = (
+            self.config.observability.snapshot_max_age_seconds
+        )
+        calls.append("run_once")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(CommandOrchestrator, "run_once", capture_run_once)
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
+
+    call_command("run_orchestrator", "--once", stdout=stdout)
+
+    assert loaded_paths == {
+        "snapshot_path": Path(".runtime/snapshot.json"),
+        "refresh_request_path": Path(".runtime/refresh.json"),
+        "recovery_path": Path(".runtime/recovery.json"),
+        "snapshot_max_age_seconds": 45,
+    }
     assert calls == ["run_once", "wait_for_running_workers", "aclose"]
 
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import tempfile
 from collections.abc import Generator, Sequence
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -66,6 +67,15 @@ def build_config(*, tmp_path: Path) -> ServiceConfig:
     )
 
 
+def fresh_snapshot_times() -> dict[str, str]:
+    generated_at = datetime.now(UTC)
+    expires_at = generated_at + timedelta(minutes=5)
+    return {
+        "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
+        "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
 def test_healthz_response_is_preserved() -> None:
     response = Client().get("/healthz")
 
@@ -84,8 +94,7 @@ def test_dashboard_returns_503_html_when_snapshot_is_missing() -> None:
 def test_dashboard_renders_runtime_snapshot_html() -> None:
     publish_runtime_snapshot(
         {
-            "generated_at": "2026-03-10T10:00:00Z",
-            "expires_at": "2099-03-10T10:02:00Z",
+            **fresh_snapshot_times(),
             "counts": {"running": 1, "retrying": 1},
             "running": [
                 {
@@ -293,8 +302,7 @@ def test_issue_endpoint_returns_503_error_envelope_when_snapshot_is_missing() ->
 def test_issue_endpoint_returns_running_issue_details() -> None:
     publish_runtime_snapshot(
         {
-            "generated_at": "2026-03-10T10:00:00Z",
-            "expires_at": "2099-03-10T10:02:00Z",
+            **fresh_snapshot_times(),
             "counts": {"running": 1, "retrying": 0},
             "running": [
                 {
@@ -370,8 +378,7 @@ def test_issue_endpoint_returns_running_issue_details() -> None:
 def test_issue_endpoint_returns_retry_issue_details() -> None:
     publish_runtime_snapshot(
         {
-            "generated_at": "2026-03-10T10:00:00Z",
-            "expires_at": "2099-03-10T10:02:00Z",
+            **fresh_snapshot_times(),
             "counts": {"running": 0, "retrying": 1},
             "running": [],
             "retrying": [
@@ -422,8 +429,7 @@ def test_issue_endpoint_returns_retry_issue_details() -> None:
 def test_issue_endpoint_returns_404_for_unknown_issue_in_snapshot() -> None:
     publish_runtime_snapshot(
         {
-            "generated_at": "2026-03-10T10:00:00Z",
-            "expires_at": "2099-03-10T10:02:00Z",
+            **fresh_snapshot_times(),
             "counts": {"running": 0, "retrying": 0},
             "running": [],
             "retrying": [],

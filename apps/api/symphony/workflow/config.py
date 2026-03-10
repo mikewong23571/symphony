@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from symphony.observability.runtime import DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
+
 from .loader import WorkflowDefinition
 
 DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql"
@@ -22,6 +24,7 @@ DEFAULT_CODEX_COMMAND = "codex app-server"
 DEFAULT_TURN_TIMEOUT_MS = 3_600_000
 DEFAULT_READ_TIMEOUT_MS = 5_000
 DEFAULT_STALL_TIMEOUT_MS = 300_000
+DEFAULT_SNAPSHOT_MAX_AGE_SECONDS = DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
 
 
 class WorkflowConfigError(Exception):
@@ -73,6 +76,14 @@ class WorkspaceConfig:
 
 
 @dataclass(slots=True, frozen=True)
+class ObservabilityConfig:
+    snapshot_path: Path | None
+    refresh_request_path: Path | None
+    recovery_path: Path | None
+    snapshot_max_age_seconds: int
+
+
+@dataclass(slots=True, frozen=True)
 class ServerConfig:
     port: int | None
 
@@ -111,6 +122,7 @@ class ServiceConfig:
     tracker: TrackerConfig
     polling: PollingConfig
     workspace: WorkspaceConfig
+    observability: ObservabilityConfig
     server: ServerConfig
     hooks: HooksConfig
     agent: AgentConfig
@@ -127,6 +139,7 @@ def build_service_config(
     tracker_section = _get_section(definition.config, "tracker")
     polling_section = _get_section(definition.config, "polling")
     workspace_section = _get_section(definition.config, "workspace")
+    observability_section = _get_section(definition.config, "observability")
     server_section = _get_section(definition.config, "server")
     hooks_section = _get_section(definition.config, "hooks")
     agent_section = _get_section(definition.config, "agent")
@@ -162,6 +175,24 @@ def build_service_config(
             root=_coerce_workspace_root(
                 workspace_section.get("root"),
                 env=environment,
+            ),
+        ),
+        observability=ObservabilityConfig(
+            snapshot_path=_coerce_optional_path(
+                observability_section.get("snapshot_path"),
+                env=environment,
+            ),
+            refresh_request_path=_coerce_optional_path(
+                observability_section.get("refresh_request_path"),
+                env=environment,
+            ),
+            recovery_path=_coerce_optional_path(
+                observability_section.get("recovery_path"),
+                env=environment,
+            ),
+            snapshot_max_age_seconds=_coerce_positive_int(
+                observability_section.get("snapshot_max_age_seconds"),
+                default=DEFAULT_SNAPSHOT_MAX_AGE_SECONDS,
             ),
         ),
         server=ServerConfig(port=_coerce_server_port(server_section.get("port"))),
@@ -346,6 +377,22 @@ def _resolve_tracker_api_key(
         resolved_value = env.get("LINEAR_API_KEY", "").strip() or None
 
     return resolved_value
+
+
+def _coerce_optional_path(value: Any, *, env: Mapping[str, str]) -> Path | None:
+    if not isinstance(value, str):
+        return None
+
+    raw_value = value.strip()
+    if not raw_value:
+        return None
+
+    if raw_value.startswith("$") and len(raw_value) > 1:
+        raw_value = env.get(raw_value[1:], "").strip()
+        if not raw_value:
+            return None
+
+    return Path(os.path.expanduser(raw_value))
 
 
 def _resolve_codex_command(codex_section: Mapping[str, Any]) -> str:
