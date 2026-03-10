@@ -18,6 +18,27 @@ tracker:
 """
 
 
+WORKFLOW_WITH_HTTP_PORT = """---
+tracker:
+  kind: linear
+  api_key: linear-token
+  project_slug: symphony
+server:
+  port: 43123
+---
+# Prompt body
+"""
+
+
+class FakeHTTPServer:
+    def __init__(self, *, url: str = "http://127.0.0.1:43123/") -> None:
+        self.url = url
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
 def fake_async_method(calls: list[str], name: str) -> object:
     async def _method(self: object) -> None:
         calls.append(name)
@@ -28,6 +49,22 @@ def fake_async_method(calls: list[str], name: str) -> object:
 def write_workflow(path: Path, *, contents: str = MINIMAL_VALID_WORKFLOW) -> Path:
     path.write_text(contents, encoding="utf-8")
     return path
+
+
+def install_fake_http_server(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    calls: list[tuple[str, int]],
+    server: FakeHTTPServer,
+) -> None:
+    def _start_http_server(*, host: str, port: int) -> FakeHTTPServer:
+        calls.append((host, port))
+        return server
+
+    monkeypatch.setattr(
+        "symphony.management.commands.run_orchestrator.start_runtime_http_server",
+        _start_http_server,
+    )
 
 
 def test_run_orchestrator_uses_default_workflow_in_cwd(
@@ -122,6 +159,112 @@ def test_run_orchestrator_runs_forever_by_default(
 
     assert "Orchestrator stopped." in stdout.getvalue()
     assert calls == ["run_forever", "aclose"]
+
+
+def test_run_orchestrator_starts_http_server_from_workflow_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
+    stdout = StringIO()
+    calls: list[str] = []
+    server_calls: list[tuple[str, int]] = []
+    fake_server = FakeHTTPServer()
+
+    monkeypatch.chdir(tmp_path)
+    install_fake_http_server(
+        monkeypatch,
+        calls=server_calls,
+        server=fake_server,
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "run_once",
+        fake_async_method(calls, "run_once"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
+
+    call_command("run_orchestrator", "--once", stdout=stdout)
+
+    output = stdout.getvalue()
+    assert "Runtime dashboard listening on http://127.0.0.1:43123/" in output
+    assert server_calls == [("127.0.0.1", 43123)]
+    assert fake_server.close_calls == 1
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+
+
+def test_run_orchestrator_cli_port_overrides_workflow_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
+    stdout = StringIO()
+    calls: list[str] = []
+    server_calls: list[tuple[str, int]] = []
+    fake_server = FakeHTTPServer(url="http://127.0.0.1:0/")
+
+    monkeypatch.chdir(tmp_path)
+    install_fake_http_server(
+        monkeypatch,
+        calls=server_calls,
+        server=fake_server,
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "run_once",
+        fake_async_method(calls, "run_once"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
+
+    call_command("run_orchestrator", "--once", "--port", "0", stdout=stdout)
+
+    assert server_calls == [("127.0.0.1", 0)]
+    assert fake_server.close_calls == 1
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+
+
+def test_run_orchestrator_rejects_negative_cli_port(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md")
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CommandError, match=r"port must be an integer greater than or equal to 0"):
+        call_command("run_orchestrator", "--port", "-1")
+
+
+def test_run_orchestrator_surfaces_http_server_bind_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "symphony.management.commands.run_orchestrator.start_runtime_http_server",
+        lambda *, host, port: (_ for _ in ()).throw(OSError("address in use")),
+    )
+
+    with pytest.raises(CommandError, match=r"Startup failed \(http_server_error\):"):
+        call_command("run_orchestrator", "--once")
 
 
 def test_run_orchestrator_fails_when_default_workflow_is_missing(

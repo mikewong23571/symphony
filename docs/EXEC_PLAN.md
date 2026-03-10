@@ -38,7 +38,6 @@ state transitions rather than low-level Codex protocol uncertainty.
 - [x] 2026-03-10 00:53Z: Ran the baseline command
   `uv run pytest apps/api/tests/unit/workflow apps/api/tests/unit/tracker apps/api/tests/unit/workspace apps/api/tests/unit/agent_runner/test_prompting.py apps/api/tests/unit/agent_runner/test_client.py`
   from the repository root and observed `75 passed in 1.64s`.
-- [ ] Full streamed turn processing is still missing. `start_app_server_session(...)` returns after
 - [x] 2026-03-10 01:53Z: Implemented full streamed turn handling in
   `apps/api/symphony/agent_runner/client.py`, `apps/api/symphony/agent_runner/events.py`, and
   `apps/api/symphony/agent_runner/runner.py`, including terminal turn parsing, malformed stdout
@@ -103,6 +102,20 @@ state transitions rather than low-level Codex protocol uncertainty.
   operational trigger endpoint CSRF-exempt in `apps/api/symphony/api/views.py` and adding an
   `enforce_csrf_checks=True` API test so curl/dashboard-style clients can use the trigger under the
   default Django middleware stack.
+- [x] 2026-03-10 06:33Z: Completed the optional HTTP observability/control slice by adding typed
+  `server.port` workflow config in `apps/api/symphony/workflow/config.py`, CLI `--port` override
+  plus loopback WSGI sidecar startup in
+  `apps/api/symphony/management/commands/run_orchestrator.py` and
+  `apps/api/symphony/api/server.py`, and a read-only dashboard at `/` in
+  `apps/api/symphony/api/views.py` backed by the existing runtime snapshot bridge while preserving
+  `/healthz`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- [x] 2026-03-10 06:33Z: Closed the follow-up review items for the HTTP slice by making the
+  dashboard and read-only JSON endpoints CSRF-exempt so unsupported methods still return spec-style
+  `405` responses under the default Django middleware stack, adding a real HTTP server lifecycle
+  test in `apps/api/tests/unit/api/test_server.py`, deduplicating dashboard issue-link rendering,
+  tightening `server.port` validation, and rerunning the full quality gates:
+  `make lint`, `make typecheck`, and `make test` (`160 passed in 11.49s` backend pytest; frontend
+  vitest exited `0` with `--passWithNoTests`).
 
 ## Surprises & Discoveries
 
@@ -155,6 +168,13 @@ state transitions rather than low-level Codex protocol uncertainty.
   Evidence: The follow-up fixes moved `_refresh_runtime_snapshot()` out of the `async with
   self._lock` regions in event handling, retry dispatch, and reconciliation so the async lock now
   covers only in-memory state mutation.
+
+- Observation: Django's default CSRF middleware runs before view method dispatch, so unsupported
+  methods on read-only HTTP endpoints do not reliably surface as `405` unless those routes are
+  explicitly exempted.
+  Evidence: The follow-up HTTP review found that `POST /api/v1/state` and
+  `POST /api/v1/<issue_identifier>` would return `403` under `enforce_csrf_checks=True` until
+  `apps/api/symphony/api/views.py` marked those endpoints CSRF-exempt.
 
 ## Decision Log
 
@@ -238,6 +258,20 @@ state transitions rather than low-level Codex protocol uncertainty.
   larger coordination mechanism.
   Date/Author: 2026-03-10 / Codex
 
+- Decision: Implement the optional HTTP extension as a small loopback-only WSGI sidecar started by
+  `run_orchestrator`, and keep it outside the orchestrator correctness path.
+  Rationale: `docs/SPEC.md` treats HTTP as an extension, not a second authority. Starting a small
+  server only when `--port` or `server.port` is configured preserves the boundary while making the
+  existing snapshot bridge and control trigger directly usable from a browser or curl.
+  Date/Author: 2026-03-10 / Codex
+
+- Decision: Mark the dashboard and read-only JSON observability endpoints CSRF-exempt.
+  Rationale: The spec requires unsupported methods on defined routes to return `405 Method Not
+  Allowed`. Under Django's default middleware stack, CSRF checks happen before the view can return
+  its method error, so explicit exemption is the smallest way to keep the routes read-only while
+  preserving the documented HTTP behavior.
+  Date/Author: 2026-03-10 / Codex
+
 ## Outcomes & Retrospective
 
 - 2026-03-10: Replaced the generic execution roadmap with a repository-state-aware ExecPlan. The
@@ -278,6 +312,14 @@ state transitions rather than low-level Codex protocol uncertainty.
   /api/v1/refresh` now queues a best-effort poll+reconcile trigger through a small shared file, and
   the orchestrator consumes that trigger between normal poll intervals without moving scheduling
   logic into Django.
+- 2026-03-10: Completed the first optional HTTP server slice around the existing observability
+  bridge. `run_orchestrator` now supports `--port` plus workflow `server.port`, starts a loopback
+  WSGI sidecar when configured, and serves a human-readable dashboard at `/` without adding a
+  second scheduler or moving orchestrator state into Django request handlers.
+- 2026-03-10: Closed the HTTP slice with a full review/fix loop and final quality-gate proof. The
+  read-only dashboard and JSON observability routes now preserve spec-style `405` behavior under
+  the default CSRF middleware stack, the HTTP server lifecycle has dedicated unit coverage, and the
+  repository passes `make lint`, `make typecheck`, and `make test`.
 
 ## Context and Orientation
 
@@ -285,9 +327,10 @@ The relevant backend code lives under `apps/api/symphony/`. The repository alrea
 modules for workflow loading (`workflow/loader.py`), typed config and defaults
 (`workflow/config.py`), Linear normalization (`tracker/linear.py`), Linear API transport and
 queries (`tracker/linear_client.py`), workspace directory safety (`workspace/manager.py`), and
-prompt construction (`agent_runner/prompting.py`). The Django command
-`apps/api/symphony/management/commands/run_orchestrator.py` currently validates workflow startup
-inputs and then exits with a “skeleton pending” message.
+prompt construction (`agent_runner/prompting.py`). The repository now also has a working
+orchestrator, a file-backed runtime snapshot bridge, issue-scoped/refresh HTTP endpoints, and an
+optional loopback HTTP sidecar that `apps/api/symphony/management/commands/run_orchestrator.py`
+can start when `--port` or workflow `server.port` is configured.
 
 In this plan, “app-server” means the Codex subprocess launched with `bash -lc <codex.command>` in
 the workspace directory. Its stdout carries one JSON protocol message per line. Its stderr is
@@ -296,18 +339,16 @@ request followed by the streamed protocol messages that end in a terminal outcom
 `turn/completed`, `turn/failed`, or `turn/cancelled`. A “stall” means the subprocess stays alive
 but emits no relevant protocol activity for longer than `codex.stall_timeout_ms`.
 
-The current app-server client is `apps/api/symphony/agent_runner/client.py`. It launches the
-subprocess, sends the startup handshake, extracts `thread_id` and `turn_id`, and then returns an
-`AppServerSession`. That session is real and useful, but it is incomplete because the rest of the
-turn stream is still unread. The existing tests in `apps/api/tests/unit/agent_runner/test_client.py`
-prove only the handshake path. They do not prove streamed notifications, terminal turn outcomes,
-approval requests, user-input-required failures, unsupported tool calls, total turn timeout, or
-stalls.
+The app-server client surface lives in `apps/api/symphony/agent_runner/client.py` and
+`apps/api/symphony/agent_runner/runner.py`. It now covers startup handshake, streamed turn
+processing, malformed stdout handling, approval/user-input/tool-call policy behavior, and
+deterministic timeout/stall termination with focused unit coverage under
+`apps/api/tests/unit/agent_runner/`.
 
-The orchestrator package exists only as a placeholder (`apps/api/symphony/orchestrator/README.md`,
-`apps/api/symphony/orchestrator/__init__.py`). This is important for sequencing. The next code
-should not begin in the orchestrator package. It should begin in `agent_runner/`, because that is
-where the protocol contract becomes stable enough for the orchestrator to consume.
+The orchestrator package is no longer a placeholder. `apps/api/symphony/orchestrator/core.py`
+owns dispatch, retries, reconciliation, runtime snapshot publication, and refresh-trigger
+consumption. Remaining work in this area is follow-on product and operational surface area rather
+than foundational protocol plumbing.
 
 ## Plan of Work
 
@@ -541,14 +582,17 @@ Current proof that the orchestrator is still only a startup shell:
 
 Current proof of the handshake-only boundary:
 
-    In `apps/api/symphony/agent_runner/client.py`, `start_app_server_session(...)` sends:
-      initialize
-      initialized
-      thread/start
-      turn/start
+    Superseded on 2026-03-10 01:53Z. The agent runner now streams turn events through
+    `apps/api/symphony/agent_runner/runner.py`, and the harness/orchestrator consume normalized
+    runtime events instead of stopping after the startup handshake.
 
-    It then returns `AppServerSession(...)` immediately after extracting `thread_id` and `turn_id`.
-    No function currently reads the remainder of that turn's stdout protocol stream.
+Current proof that the optional HTTP surface is wired end-to-end:
+
+    $ make lint
+    $ make typecheck
+    $ make test
+    backend: ============================= 160 passed in 11.49s =============================
+    frontend: vitest exited 0 with --passWithNoTests
 
 ## Interfaces and Dependencies
 

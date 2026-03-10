@@ -73,6 +73,81 @@ def test_healthz_response_is_preserved() -> None:
     assert response.json() == {"status": "ok", "service": "symphony-api"}
 
 
+def test_dashboard_returns_503_html_when_snapshot_is_missing() -> None:
+    response = Client().get("/")
+
+    assert response.status_code == 503
+    assert response["Content-Type"].startswith("text/html")
+    assert "Runtime snapshot unavailable" in response.content.decode("utf-8")
+
+
+def test_dashboard_renders_runtime_snapshot_html() -> None:
+    publish_runtime_snapshot(
+        {
+            "generated_at": "2026-03-10T10:00:00Z",
+            "expires_at": "2099-03-10T10:02:00Z",
+            "counts": {"running": 1, "retrying": 1},
+            "running": [
+                {
+                    "issue_id": "issue-123",
+                    "issue_identifier": "SYM-123",
+                    "attempt": 2,
+                    "state": "In Progress",
+                    "session_id": "thread-1-turn-2",
+                    "turn_count": 7,
+                    "last_event": "notification",
+                    "last_message": "Working on tests",
+                    "started_at": "2026-03-10T09:55:00Z",
+                    "last_event_at": "2026-03-10T09:59:30Z",
+                    "workspace_path": "/tmp/symphony/SYM-123",
+                    "tokens": {
+                        "input_tokens": 1200,
+                        "output_tokens": 800,
+                        "total_tokens": 2000,
+                    },
+                }
+            ],
+            "retrying": [
+                {
+                    "issue_id": "issue-456",
+                    "issue_identifier": "SYM-456",
+                    "attempt": 3,
+                    "due_at": "2026-03-10T10:01:00Z",
+                    "error": "no available orchestrator slots",
+                    "workspace_path": "/tmp/symphony/SYM-456",
+                }
+            ],
+            "codex_totals": {
+                "input_tokens": 1200,
+                "output_tokens": 800,
+                "total_tokens": 2000,
+                "seconds_running": 300.0,
+            },
+            "rate_limits": None,
+        }
+    )
+
+    response = Client().get("/")
+    body = response.content.decode("utf-8")
+
+    assert response.status_code == 200
+    assert response["Content-Type"].startswith("text/html")
+    assert "Symphony Runtime" in body
+    assert "Read-only observability view" in body
+    assert "SYM-123" in body
+    assert "SYM-456" in body
+    assert "/api/v1/state" in body
+
+
+def test_dashboard_rejects_post_with_405_html_response() -> None:
+    response = Client(enforce_csrf_checks=True).post("/", data={})
+
+    assert response.status_code == 405
+    assert response["Allow"] == "GET, HEAD"
+    assert response["Content-Type"].startswith("text/html")
+    assert "Method &#x27;POST&#x27; is not allowed for /." in response.content.decode("utf-8")
+
+
 def test_state_endpoint_returns_503_error_envelope_when_snapshot_is_missing() -> None:
     response = Client().get("/api/v1/state")
 
@@ -135,7 +210,7 @@ def test_state_endpoint_reads_default_snapshot_path_across_processes(
 
 
 def test_state_endpoint_rejects_post_with_405_error_envelope() -> None:
-    response = Client().post("/api/v1/state", data={})
+    response = Client(enforce_csrf_checks=True).post("/api/v1/state", data={})
 
     assert response.status_code == 405
     assert response["Allow"] == "GET, HEAD"
@@ -374,7 +449,7 @@ def test_issue_endpoint_returns_404_for_unknown_issue_in_snapshot() -> None:
 
 
 def test_issue_endpoint_rejects_post_with_405_error_envelope() -> None:
-    response = Client().post("/api/v1/SYM-123", data={})
+    response = Client(enforce_csrf_checks=True).post("/api/v1/SYM-123", data={})
 
     assert response.status_code == 405
     assert response["Allow"] == "GET, HEAD"

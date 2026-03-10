@@ -1,7 +1,14 @@
 from django.urls import path
-from symphony.api.views import healthcheck, runtime_issue, runtime_refresh, runtime_state
+from symphony.api.views import (
+    healthcheck,
+    runtime_dashboard,
+    runtime_issue,
+    runtime_refresh,
+    runtime_state,
+)
 
 urlpatterns = [
+    path("", runtime_dashboard, name="runtime-dashboard"),
     path("healthz", healthcheck, name="healthcheck"),
     path("api/v1/state", runtime_state, name="runtime-state"),
     path("api/v1/refresh", runtime_refresh, name="runtime-refresh"),

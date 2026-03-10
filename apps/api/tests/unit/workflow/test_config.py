@@ -12,6 +12,7 @@ from symphony.workflow import (
     DEFAULT_MAX_TURNS,
     DEFAULT_TERMINAL_STATES,
     DEFAULT_WORKSPACE_ROOT,
+    InvalidServerPortError,
     MissingCodexCommandError,
     MissingTrackerAPIKeyError,
     MissingTrackerProjectSlugError,
@@ -35,6 +36,7 @@ def test_build_service_config_applies_defaults() -> None:
     assert config.tracker.active_states == DEFAULT_ACTIVE_STATES
     assert config.tracker.terminal_states == DEFAULT_TERMINAL_STATES
     assert config.workspace.root == DEFAULT_WORKSPACE_ROOT
+    assert config.server.port is None
     assert config.hooks.timeout_ms == DEFAULT_HOOK_TIMEOUT_MS
     assert config.agent.max_turns == DEFAULT_MAX_TURNS
     assert config.codex.command == DEFAULT_CODEX_COMMAND
@@ -122,6 +124,18 @@ def test_build_service_config_parses_states_and_agent_limits() -> None:
     assert config.hooks.timeout_ms == DEFAULT_HOOK_TIMEOUT_MS
     assert config.agent.max_turns == 25
     assert config.agent.max_concurrent_agents_by_state == {"todo": 2, "blocked": 3}
+
+
+def test_build_service_config_parses_optional_server_port() -> None:
+    config = build_service_config(build_definition({"server": {"port": "0"}}))
+
+    assert config.server.port == 0
+
+
+@pytest.mark.parametrize("raw_port", [-1, "abc", True])
+def test_build_service_config_rejects_invalid_server_port(raw_port: object) -> None:
+    with pytest.raises(InvalidServerPortError, match="server.port must be an integer"):
+        build_service_config(build_definition({"server": {"port": raw_port}}))
 
 
 @pytest.mark.parametrize(

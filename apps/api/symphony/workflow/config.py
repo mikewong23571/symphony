@@ -48,6 +48,10 @@ class MissingCodexCommandError(WorkflowConfigError):
     code = "missing_codex_command"
 
 
+class InvalidServerPortError(WorkflowConfigError):
+    code = "invalid_server_port"
+
+
 @dataclass(slots=True, frozen=True)
 class TrackerConfig:
     kind: str | None
@@ -66,6 +70,11 @@ class PollingConfig:
 @dataclass(slots=True, frozen=True)
 class WorkspaceConfig:
     root: Path
+
+
+@dataclass(slots=True, frozen=True)
+class ServerConfig:
+    port: int | None
 
 
 @dataclass(slots=True, frozen=True)
@@ -102,6 +111,7 @@ class ServiceConfig:
     tracker: TrackerConfig
     polling: PollingConfig
     workspace: WorkspaceConfig
+    server: ServerConfig
     hooks: HooksConfig
     agent: AgentConfig
     codex: CodexConfig
@@ -117,6 +127,7 @@ def build_service_config(
     tracker_section = _get_section(definition.config, "tracker")
     polling_section = _get_section(definition.config, "polling")
     workspace_section = _get_section(definition.config, "workspace")
+    server_section = _get_section(definition.config, "server")
     hooks_section = _get_section(definition.config, "hooks")
     agent_section = _get_section(definition.config, "agent")
     codex_section = _get_section(definition.config, "codex")
@@ -153,6 +164,7 @@ def build_service_config(
                 env=environment,
             ),
         ),
+        server=ServerConfig(port=_coerce_server_port(server_section.get("port"))),
         hooks=HooksConfig(
             after_create=_clean_string(hooks_section.get("after_create")),
             before_run=_clean_string(hooks_section.get("before_run")),
@@ -256,6 +268,31 @@ def _coerce_positive_int(value: Any, *, default: int) -> int:
     if coerced <= 0:
         return default
     return coerced
+
+
+def _coerce_server_port(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise InvalidServerPortError("server.port must be an integer greater than or equal to 0.")
+    if isinstance(value, int):
+        if value >= 0:
+            return value
+        raise InvalidServerPortError("server.port must be an integer greater than or equal to 0.")
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        try:
+            parsed = int(normalized)
+        except ValueError as exc:
+            raise InvalidServerPortError(
+                "server.port must be an integer greater than or equal to 0."
+            ) from exc
+        if parsed >= 0:
+            return parsed
+        raise InvalidServerPortError("server.port must be an integer greater than or equal to 0.")
+    raise InvalidServerPortError("server.port must be an integer greater than or equal to 0.")
 
 
 def _coerce_states(value: Any, default: tuple[str, ...]) -> tuple[str, ...]:

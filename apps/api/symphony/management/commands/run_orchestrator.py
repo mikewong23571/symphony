@@ -1,10 +1,11 @@
 import asyncio
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
 
+from symphony.api.server import DEFAULT_HTTP_BIND_HOST, start_runtime_http_server
 from symphony.orchestrator import Orchestrator
 from symphony.workflow import (
     WorkflowConfigError,
@@ -14,6 +15,9 @@ from symphony.workflow import (
     resolve_workflow_path,
     validate_dispatch_config,
 )
+
+if TYPE_CHECKING:
+    from symphony.api.server import RuntimeHTTPServer
 
 __all__ = ["Command", "Orchestrator"]
 
@@ -32,12 +36,25 @@ class Command(BaseCommand):
             action="store_true",
             help="Run startup cleanup and a single orchestrator tick, then exit.",
         )
+        parser.add_argument(
+            "--port",
+            type=int,
+            help="Optional loopback HTTP port for the observability/control extension.",
+        )
 
     def handle(self, *args: object, **options: Any) -> str | None:
         workflow_path = options.get("workflow_path")
         if workflow_path is not None and not isinstance(workflow_path, str):
             raise CommandError("Startup failed (workflow_error): workflow path must be a string.")
         run_once = bool(options.get("once"))
+        cli_port = options.get("port")
+        if cli_port is not None and not isinstance(cli_port, int):
+            raise CommandError("Startup failed (workflow_error): port must be an integer.")
+        if cli_port is not None and cli_port < 0:
+            raise CommandError(
+                "Startup failed (workflow_config_error): "
+                "port must be an integer greater than or equal to 0."
+            )
 
         resolved_path = resolve_workflow_path(workflow_path, cwd=Path.cwd())
 
@@ -49,6 +66,8 @@ class Command(BaseCommand):
             raise CommandError(f"Startup failed ({exc.code}): {exc.message}") from exc
 
         self.stdout.write(f"Loaded workflow definition from {resolved_path}")
+        http_port = cli_port if cli_port is not None else config.server.port
+        http_server = self._start_http_server(port=http_port)
 
         async def run() -> None:
             orchestrator = Orchestrator(config=config)
@@ -62,7 +81,11 @@ class Command(BaseCommand):
                 await orchestrator.aclose()
 
         try:
-            asyncio.run(run())
+            try:
+                asyncio.run(run())
+            finally:
+                if http_server is not None:
+                    http_server.close()
         except KeyboardInterrupt:
             self.stdout.write(self.style.WARNING("Orchestrator stopped by signal."))
 
@@ -71,3 +94,16 @@ class Command(BaseCommand):
         else:
             self.stdout.write("Orchestrator stopped.")
         return None
+
+    def _start_http_server(self, *, port: int | None) -> "RuntimeHTTPServer | None":
+        if port is None:
+            return None
+        try:
+            http_server = start_runtime_http_server(host=DEFAULT_HTTP_BIND_HOST, port=port)
+        except OSError as exc:
+            raise CommandError(
+                f"Startup failed (http_server_error): could not bind HTTP server to "
+                f"{DEFAULT_HTTP_BIND_HOST}:{port}."
+            ) from exc
+        self.stdout.write(f"Runtime dashboard listening on {http_server.url}")
+        return http_server
