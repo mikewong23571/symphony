@@ -85,6 +85,15 @@ state transitions rather than low-level Codex protocol uncertainty.
   stale file-backed snapshots are rejected, default snapshot file names are process-specific, retry
   snapshot rows no longer store redundant monotonic due times, and the focused tests now cover
   repeated same-turn events plus stale snapshot rejection.
+- [x] 2026-03-10 07:20Z: Added `GET /api/v1/<issue_identifier>` as the first issue-scoped runtime
+  debug endpoint, deriving read-only detail responses from the existing runtime snapshot bridge,
+  extending snapshot rows with attempt/workspace metadata, and covering running/retrying/404/405
+  API behavior plus the new snapshot fields in focused tests.
+- [x] 2026-03-10 07:45Z: Fixed the follow-up snapshot regression in
+  `apps/api/symphony/orchestrator/core.py` so runtime snapshot serialization now uses a best-
+  effort workspace-path fallback for degenerate issue identifiers instead of raising from
+  `resolve_workspace_path(...)`, and added focused orchestrator coverage for running/retrying rows
+  with invalid workspace identifiers.
 
 ## Surprises & Discoveries
 
@@ -248,6 +257,14 @@ state transitions rather than low-level Codex protocol uncertainty.
   now reject stale files, default snapshot files no longer collide across local orchestrator
   processes, distinct turns are counted deterministically, and snapshot publication no longer holds
   the orchestrator's async state lock across filesystem I/O.
+- 2026-03-10: Extended the HTTP observability surface from aggregate-only state to issue-scoped
+  debugging. Operators can now fetch one active issue by identifier from the same runtime snapshot
+  source without moving orchestration logic into Django views, while unknown issues return a
+  spec-style `404` error envelope.
+- 2026-03-10: Hardened the issue-scoped snapshot path after review. Runtime snapshot refreshes no
+  longer fail when tracker identifiers are too degenerate for `WorkspaceManager` sanitization; the
+  observability surface now falls back to a best-effort workspace path in the same way the worker
+  harness already does.
 
 ## Context and Orientation
 

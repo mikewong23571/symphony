@@ -30,6 +30,10 @@ class RuntimeSnapshotUnavailableError(RuntimeError):
     pass
 
 
+class RuntimeIssueNotFoundError(RuntimeError):
+    pass
+
+
 _provider_lock = threading.Lock()
 _provider: RuntimeSnapshotProvider | None = None
 
@@ -132,6 +136,72 @@ def get_runtime_snapshot() -> dict[str, Any]:
     return load_runtime_snapshot()
 
 
+def get_runtime_issue_snapshot(issue_identifier: str) -> dict[str, Any]:
+    snapshot = get_runtime_snapshot()
+    running_row = _find_issue_snapshot_row(snapshot.get("running"), issue_identifier)
+    retry_row = _find_issue_snapshot_row(snapshot.get("retrying"), issue_identifier)
+    issue_row = running_row or retry_row
+
+    if issue_row is None:
+        raise RuntimeIssueNotFoundError(
+            f"Issue {issue_identifier!r} is not present in the current runtime snapshot."
+        )
+
+    recent_events: list[dict[str, Any]] = []
+    if running_row is not None and isinstance(running_row.get("last_event"), str):
+        recent_events.append(
+            {
+                "at": running_row.get("last_event_at"),
+                "event": running_row["last_event"],
+                "message": running_row.get("last_message") or "",
+            }
+        )
+
+    retry_details = None
+    if retry_row is not None:
+        retry_details = {
+            "attempt": retry_row.get("attempt"),
+            "due_at": retry_row.get("due_at"),
+            "error": retry_row.get("error"),
+        }
+
+    running_details = None
+    if running_row is not None:
+        running_details = {
+            "session_id": running_row.get("session_id"),
+            "turn_count": running_row.get("turn_count"),
+            "state": running_row.get("state"),
+            "started_at": running_row.get("started_at"),
+            "last_event": running_row.get("last_event"),
+            "last_message": running_row.get("last_message") or "",
+            "last_event_at": running_row.get("last_event_at"),
+            "tokens": running_row.get("tokens"),
+        }
+
+    workspace_path = issue_row.get("workspace_path")
+    workspace = {"path": workspace_path} if isinstance(workspace_path, str) else None
+
+    return {
+        "issue_identifier": issue_identifier,
+        "issue_id": issue_row.get("issue_id"),
+        "status": "running" if running_row is not None else "retrying",
+        "workspace": workspace,
+        "attempts": {
+            "restart_count": _get_issue_restart_count(running_row=running_row, retry_row=retry_row),
+            "current_retry_attempt": _get_issue_current_retry_attempt(
+                running_row=running_row,
+                retry_row=retry_row,
+            ),
+        },
+        "running": running_details,
+        "retry": retry_details,
+        "logs": {"codex_session_logs": []},
+        "recent_events": recent_events,
+        "last_error": retry_row.get("error") if retry_row is not None else None,
+        "tracked": {},
+    }
+
+
 def _ensure_snapshot_is_fresh(snapshot: dict[str, Any], path: Path) -> None:
     expires_at = parse_snapshot_timestamp(snapshot.get("expires_at"))
     if expires_at is not None and datetime.now(UTC) > expires_at:
@@ -188,6 +258,47 @@ def _sanitize_snapshot_scope_name(value: str) -> str:
 
 def _serialize_runtime_snapshot(snapshot: Mapping[str, Any]) -> str:
     return json.dumps(snapshot, sort_keys=True)
+
+
+def _find_issue_snapshot_row(rows: Any, issue_identifier: str) -> dict[str, Any] | None:
+    if not isinstance(rows, list):
+        return None
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("issue_identifier") == issue_identifier:
+            return cast(dict[str, Any], row)
+
+    return None
+
+
+def _get_issue_current_retry_attempt(
+    *,
+    running_row: dict[str, Any] | None,
+    retry_row: dict[str, Any] | None,
+) -> int | None:
+    attempt_value = None
+    if running_row is not None:
+        attempt_value = running_row.get("attempt")
+    elif retry_row is not None:
+        attempt_value = retry_row.get("attempt")
+
+    return attempt_value if isinstance(attempt_value, int) else None
+
+
+def _get_issue_restart_count(
+    *,
+    running_row: dict[str, Any] | None,
+    retry_row: dict[str, Any] | None,
+) -> int:
+    current_retry_attempt = _get_issue_current_retry_attempt(
+        running_row=running_row,
+        retry_row=retry_row,
+    )
+    if current_retry_attempt is None:
+        return 0
+    return max(current_retry_attempt - 1, 0)
 
 
 def _replace_runtime_snapshot_file(*, path: Path, payload: str) -> None:

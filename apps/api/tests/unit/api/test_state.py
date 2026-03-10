@@ -141,6 +141,189 @@ def test_state_endpoint_rejects_post_with_405_error_envelope() -> None:
     }
 
 
+def test_issue_endpoint_returns_503_error_envelope_when_snapshot_is_missing() -> None:
+    response = Client().get("/api/v1/SYM-123")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "error": {
+            "code": "unavailable",
+            "message": f"Runtime snapshot is unavailable at {get_runtime_snapshot_path()}.",
+        }
+    }
+
+
+def test_issue_endpoint_returns_running_issue_details() -> None:
+    publish_runtime_snapshot(
+        {
+            "generated_at": "2026-03-10T10:00:00Z",
+            "expires_at": "2099-03-10T10:02:00Z",
+            "counts": {"running": 1, "retrying": 0},
+            "running": [
+                {
+                    "issue_id": "issue-123",
+                    "issue_identifier": "SYM-123",
+                    "attempt": 2,
+                    "state": "In Progress",
+                    "session_id": "thread-1-turn-2",
+                    "turn_count": 7,
+                    "last_event": "notification",
+                    "last_message": "Working on tests",
+                    "started_at": "2026-03-10T09:55:00Z",
+                    "last_event_at": "2026-03-10T09:59:30Z",
+                    "workspace_path": "/tmp/symphony/SYM-123",
+                    "tokens": {
+                        "input_tokens": 1200,
+                        "output_tokens": 800,
+                        "total_tokens": 2000,
+                    },
+                }
+            ],
+            "retrying": [],
+            "codex_totals": {
+                "input_tokens": 1200,
+                "output_tokens": 800,
+                "total_tokens": 2000,
+                "seconds_running": 300.0,
+            },
+            "rate_limits": None,
+        }
+    )
+
+    response = Client().get("/api/v1/SYM-123")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "issue_identifier": "SYM-123",
+        "issue_id": "issue-123",
+        "status": "running",
+        "workspace": {"path": "/tmp/symphony/SYM-123"},
+        "attempts": {
+            "restart_count": 1,
+            "current_retry_attempt": 2,
+        },
+        "running": {
+            "session_id": "thread-1-turn-2",
+            "turn_count": 7,
+            "state": "In Progress",
+            "started_at": "2026-03-10T09:55:00Z",
+            "last_event": "notification",
+            "last_message": "Working on tests",
+            "last_event_at": "2026-03-10T09:59:30Z",
+            "tokens": {
+                "input_tokens": 1200,
+                "output_tokens": 800,
+                "total_tokens": 2000,
+            },
+        },
+        "retry": None,
+        "logs": {"codex_session_logs": []},
+        "recent_events": [
+            {
+                "at": "2026-03-10T09:59:30Z",
+                "event": "notification",
+                "message": "Working on tests",
+            }
+        ],
+        "last_error": None,
+        "tracked": {},
+    }
+
+
+def test_issue_endpoint_returns_retry_issue_details() -> None:
+    publish_runtime_snapshot(
+        {
+            "generated_at": "2026-03-10T10:00:00Z",
+            "expires_at": "2099-03-10T10:02:00Z",
+            "counts": {"running": 0, "retrying": 1},
+            "running": [],
+            "retrying": [
+                {
+                    "issue_id": "issue-456",
+                    "issue_identifier": "SYM-456",
+                    "attempt": 3,
+                    "due_at": "2026-03-10T10:01:00Z",
+                    "error": "no available orchestrator slots",
+                    "workspace_path": "/tmp/symphony/SYM-456",
+                }
+            ],
+            "codex_totals": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "seconds_running": 0.0,
+            },
+            "rate_limits": None,
+        }
+    )
+
+    response = Client().get("/api/v1/SYM-456")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "issue_identifier": "SYM-456",
+        "issue_id": "issue-456",
+        "status": "retrying",
+        "workspace": {"path": "/tmp/symphony/SYM-456"},
+        "attempts": {
+            "restart_count": 2,
+            "current_retry_attempt": 3,
+        },
+        "running": None,
+        "retry": {
+            "attempt": 3,
+            "due_at": "2026-03-10T10:01:00Z",
+            "error": "no available orchestrator slots",
+        },
+        "logs": {"codex_session_logs": []},
+        "recent_events": [],
+        "last_error": "no available orchestrator slots",
+        "tracked": {},
+    }
+
+
+def test_issue_endpoint_returns_404_for_unknown_issue_in_snapshot() -> None:
+    publish_runtime_snapshot(
+        {
+            "generated_at": "2026-03-10T10:00:00Z",
+            "expires_at": "2099-03-10T10:02:00Z",
+            "counts": {"running": 0, "retrying": 0},
+            "running": [],
+            "retrying": [],
+            "codex_totals": {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "seconds_running": 0.0,
+            },
+            "rate_limits": None,
+        }
+    )
+
+    response = Client().get("/api/v1/SYM-999")
+
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "issue_not_found",
+            "message": "Issue 'SYM-999' is not present in the current runtime snapshot.",
+        }
+    }
+
+
+def test_issue_endpoint_rejects_post_with_405_error_envelope() -> None:
+    response = Client().post("/api/v1/SYM-123", data={})
+
+    assert response.status_code == 405
+    assert response["Allow"] == "GET, HEAD"
+    assert response.json() == {
+        "error": {
+            "code": "method_not_allowed",
+            "message": "Method 'POST' is not allowed for /api/v1/SYM-123.",
+        }
+    }
+
+
 def test_state_endpoint_uses_live_provider_when_snapshot_file_is_missing(tmp_path: Path) -> None:
     orchestrator = Orchestrator(
         config=build_config(tmp_path=tmp_path),

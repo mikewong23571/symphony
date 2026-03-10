@@ -645,10 +645,12 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
             running_row = snapshot["running"][0]
             assert running_row["issue_id"] == issue.id
             assert running_row["issue_identifier"] == issue.identifier
+            assert running_row["attempt"] is None
             assert running_row["state"] == issue.state
             assert running_row["session_id"] == "thr_123-turn_2"
             assert running_row["turn_count"] == 2
             assert running_row["last_event"] == "notification"
+            assert running_row["workspace_path"].endswith(f"/{issue.identifier}")
             assert running_row["tokens"] == {
                 "input_tokens": 10,
                 "output_tokens": 5,
@@ -662,6 +664,7 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
             assert retry_row["issue_identifier"] == retry_issue.identifier
             assert retry_row["attempt"] == 3
             assert retry_row["error"] == "no available orchestrator slots"
+            assert retry_row["workspace_path"].endswith(f"/{retry_issue.identifier}")
             assert isinstance(retry_row["due_at"], str)
 
             codex_totals = snapshot["codex_totals"]
@@ -669,6 +672,56 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
             assert codex_totals["output_tokens"] == 55
             assert codex_totals["total_tokens"] == 165
             assert 17.5 <= codex_totals["seconds_running"] <= 18.5
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_runtime_snapshot_tolerates_degenerate_workspace_identifiers(
+    tmp_path: Path,
+) -> None:
+    running_issue = build_issue(issue_id="issue-1", identifier="..")
+    retry_issue = build_issue(issue_id="issue-2", identifier="   ")
+    config = build_config(tmp_path=tmp_path)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+
+        orchestrator.state.running[running_issue.id] = RunningEntry(
+            issue=running_issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            started_at=datetime.now(UTC),
+        )
+
+        try:
+            await orchestrator._schedule_retry(
+                issue_id=retry_issue.id,
+                identifier=retry_issue.identifier,
+                attempt=1,
+                delay_ms=30_000,
+                error="retry me",
+            )
+
+            snapshot = orchestrator.get_runtime_snapshot()
+
+            assert snapshot["running"][0]["issue_identifier"] == running_issue.identifier
+            assert snapshot["running"][0]["workspace_path"] == str(
+                config.workspace.root / running_issue.identifier
+            )
+            assert snapshot["retrying"][0]["issue_identifier"] == retry_issue.identifier
+            assert snapshot["retrying"][0]["workspace_path"] == str(
+                config.workspace.root / retry_issue.identifier
+            )
         finally:
             await orchestrator.aclose()
 

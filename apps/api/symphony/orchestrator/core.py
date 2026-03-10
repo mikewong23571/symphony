@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -780,6 +781,7 @@ class Orchestrator:
             {
                 "issue_id": entry.issue.id,
                 "issue_identifier": entry.issue.identifier,
+                "attempt": entry.attempt,
                 "state": entry.issue.state,
                 "session_id": entry.session_id,
                 "turn_count": entry.turn_count,
@@ -787,6 +789,9 @@ class Orchestrator:
                 "last_message": entry.last_codex_message or "",
                 "started_at": isoformat_utc(entry.started_at),
                 "last_event_at": isoformat_utc(entry.last_codex_timestamp),
+                "workspace_path": str(
+                    _best_effort_workspace_path(self.workspace_manager, entry.issue.identifier)
+                ),
                 "tokens": {
                     "input_tokens": entry.codex_input_tokens,
                     "output_tokens": entry.codex_output_tokens,
@@ -806,6 +811,9 @@ class Orchestrator:
                 "attempt": entry.attempt,
                 "due_at": isoformat_utc(entry.due_at),
                 "error": entry.error,
+                "workspace_path": str(
+                    _best_effort_workspace_path(self.workspace_manager, entry.identifier)
+                ),
             }
             for entry in sorted(
                 self.state.retry_attempts.values(),
@@ -845,6 +853,13 @@ class Orchestrator:
             },
             "rate_limits": copy.deepcopy(self.state.codex_rate_limits),
         }
+
+
+def _best_effort_workspace_path(manager: WorkspaceManager, issue_identifier: str) -> Path:
+    try:
+        return manager.resolve_workspace_path(issue_identifier)
+    except WorkspaceError:
+        return manager.root / issue_identifier
 
 
 def _summarize_payload(payload: Any) -> str:
