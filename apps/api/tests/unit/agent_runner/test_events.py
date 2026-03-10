@@ -101,3 +101,24 @@ def test_extract_usage_snapshot_ignores_generic_usage_for_unknown_event_shapes()
     )
 
     assert usage is None
+
+
+def test_extract_usage_snapshot_accepts_explicit_event_name_override() -> None:
+    usage = extract_usage_snapshot(
+        {
+            "params": {
+                "usage": {
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                }
+            },
+        },
+        event_name="turn/completed",
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 5
+    assert usage.total_tokens == 15
+    assert usage.is_absolute_total is True

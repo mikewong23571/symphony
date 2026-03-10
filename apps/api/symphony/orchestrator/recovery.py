@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from symphony.observability.runtime import get_runtime_recovery_path
 from symphony.observability.snapshots import isoformat_utc, parse_snapshot_timestamp
 
 
@@ -21,7 +20,7 @@ class RecoveryStateError(RuntimeError):
 
 
 @dataclass(slots=True, frozen=True)
-class RecoverySessionState:
+class PersistedSessionMetadata:
     session_id: str | None
     thread_id: str | None
     turn_id: str | None
@@ -58,7 +57,7 @@ class RecoveryRetryState:
     due_at: datetime
     workspace_path: Path
     error: str | None
-    prior_session: RecoverySessionState | None = None
+    prior_session: PersistedSessionMetadata | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
@@ -81,7 +80,7 @@ class RecoveryRunningState:
     attempt: int | None
     workspace_path: Path
     started_at: datetime
-    session: RecoverySessionState
+    session: PersistedSessionMetadata
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -106,8 +105,7 @@ class RecoveryState:
         }
 
 
-def load_recovery_state() -> RecoveryState | None:
-    path = get_runtime_recovery_path()
+def load_recovery_state(path: Path) -> RecoveryState | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -131,8 +129,7 @@ def load_recovery_state() -> RecoveryState | None:
     )
 
 
-def publish_recovery_state(state: RecoveryState) -> Path:
-    path = get_runtime_recovery_path()
+def publish_recovery_state(path: Path, state: RecoveryState) -> Path:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _replace_recovery_file(path=path, payload=json.dumps(state.to_payload(), sort_keys=True))
@@ -195,12 +192,12 @@ def _parse_session_state(
     path: Path,
     payload: dict[str, Any],
     label: str,
-) -> RecoverySessionState:
+) -> PersistedSessionMetadata:
     tokens = payload.get("tokens")
     if not isinstance(tokens, dict):
         raise RecoveryStateError(f"Recovery state at {path} is missing {label}.tokens.")
 
-    return RecoverySessionState(
+    return PersistedSessionMetadata(
         session_id=_optional_string(path, payload.get("session_id"), f"{label}.session_id"),
         thread_id=_optional_string(path, payload.get("thread_id"), f"{label}.thread_id"),
         turn_id=_optional_string(path, payload.get("turn_id"), f"{label}.turn_id"),
@@ -300,3 +297,6 @@ def _replace_recovery_file(*, path: Path, payload: str) -> None:
             except OSError:
                 pass
         raise
+
+
+RecoverySessionState = PersistedSessionMetadata

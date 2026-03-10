@@ -22,6 +22,7 @@ from symphony.observability.runtime import (
     clear_runtime_snapshot_provider,
     configure_runtime_observability,
     consume_runtime_refresh_request,
+    get_runtime_recovery_path,
     get_runtime_snapshot_refresh_interval_seconds,
     publish_runtime_snapshot,
     register_runtime_snapshot_provider,
@@ -32,9 +33,9 @@ from symphony.observability.snapshots import (
     refresh_runtime_snapshot,
 )
 from symphony.orchestrator.recovery import (
+    PersistedSessionMetadata,
     RecoveryRetryState,
     RecoveryRunningState,
-    RecoverySessionState,
     RecoveryState,
     RecoveryStateError,
     load_recovery_state,
@@ -241,6 +242,12 @@ class Orchestrator:
             self._runtime_snapshot_task.cancel()
 
         running_entries = list(self.state.running.values())
+        for running_entry in running_entries:
+            self._cancel_reasons[running_entry.issue.id] = "canceled_by_shutdown"
+
+        if running_entries or retry_entries:
+            self._publish_recovery_state_best_effort()
+
         for running_entry in running_entries:
             running_entry.worker_task.cancel()
 
@@ -611,6 +618,9 @@ class Orchestrator:
             self._refresh_runtime_snapshot()
 
     async def _handle_worker_exit(self, issue_id: str, result: AttemptResult) -> None:
+        if self._shutting_down and result.status == "canceled_by_shutdown":
+            return
+
         cleanup_identifier: str | None = None
         cleanup_workspace_path: Path | None = None
         retry_schedule: RetrySchedule | None = None
@@ -1075,7 +1085,7 @@ class Orchestrator:
 
     def _publish_recovery_state_best_effort(self) -> None:
         try:
-            publish_recovery_state(self._build_recovery_state())
+            publish_recovery_state(get_runtime_recovery_path(), self._build_recovery_state())
         except RecoveryStateError:
             logger.warning(
                 "Recovery state publish failed; continuing with in-memory orchestrator state only.",
@@ -1094,7 +1104,10 @@ class Orchestrator:
 
     async def _recover_runtime_state(self) -> None:
         try:
-            recovery_state = await asyncio.to_thread(load_recovery_state)
+            recovery_state = await asyncio.to_thread(
+                load_recovery_state,
+                get_runtime_recovery_path(),
+            )
         except RecoveryStateError as exc:
             log_event(
                 logger,
@@ -1505,8 +1518,8 @@ def _running_entry_session_snapshot(running_entry: RunningEntry) -> dict[str, An
     return session.to_snapshot()
 
 
-def _recovery_session_from_running_entry(running_entry: RunningEntry) -> RecoverySessionState:
-    return RecoverySessionState(
+def _recovery_session_from_running_entry(running_entry: RunningEntry) -> PersistedSessionMetadata:
+    return PersistedSessionMetadata(
         session_id=running_entry.session_id,
         thread_id=running_entry.thread_id,
         turn_id=running_entry.turn_id,
@@ -1535,10 +1548,10 @@ def _recovery_retry_from_entry(retry_entry: RetryEntry) -> RecoveryRetryState:
     )
 
 
-def _recovery_session_from_snapshot(snapshot: dict[str, Any]) -> RecoverySessionState:
+def _recovery_session_from_snapshot(snapshot: dict[str, Any]) -> PersistedSessionMetadata:
     tokens = snapshot.get("tokens")
     token_map = tokens if isinstance(tokens, dict) else {}
-    return RecoverySessionState(
+    return PersistedSessionMetadata(
         session_id=_blank_to_none(_string_or_none(snapshot.get("session_id"))),
         thread_id=_blank_to_none(_string_or_none(snapshot.get("thread_id"))),
         turn_id=_blank_to_none(_string_or_none(snapshot.get("turn_id"))),

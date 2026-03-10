@@ -8,6 +8,7 @@ from django.core.management.base import BaseCommand, CommandError, CommandParser
 
 from symphony.api.server import DEFAULT_HTTP_BIND_HOST, start_runtime_http_server
 from symphony.observability.logging import log_event
+from symphony.observability.runtime import configure_runtime_observability
 from symphony.orchestrator import Orchestrator
 from symphony.workflow import (
     WorkflowConfigError,
@@ -101,6 +102,12 @@ class Command(BaseCommand):
             raise CommandError(f"Startup failed ({exc.code}): {exc.message}") from exc
 
         self.stdout.write(f"Loaded workflow definition from {workflow_runtime.path}")
+        configure_runtime_observability(
+            snapshot_path=config.observability.snapshot_path,
+            refresh_request_path=config.observability.refresh_request_path,
+            recovery_path=config.observability.recovery_path,
+            snapshot_max_age_seconds=config.observability.snapshot_max_age_seconds,
+        )
         http_port = cli_port if cli_port is not None else config.server.port
         http_server = self._start_http_server(port=http_port)
 

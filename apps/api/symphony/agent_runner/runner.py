@@ -81,7 +81,11 @@ async def stream_turn(
             )
 
         last_activity_at = loop.time()
-        usage = extract_usage_snapshot(message)
+        raw_message_event_name = message.get("method")
+        message_event_name = (
+            raw_message_event_name if isinstance(raw_message_event_name, str) else None
+        )
+        usage = extract_usage_snapshot(message, event_name=message_event_name)
 
         if _is_turn_completed(message):
             await _emit_runtime_event(

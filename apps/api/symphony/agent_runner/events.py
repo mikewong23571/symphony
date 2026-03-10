@@ -38,8 +38,12 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def extract_usage_snapshot(message: Mapping[str, Any]) -> UsageSnapshot | None:
-    method = _coerce_method_name(message.get("method"))
+def extract_usage_snapshot(
+    message: Mapping[str, Any],
+    *,
+    event_name: str | None = None,
+) -> UsageSnapshot | None:
+    method = _coerce_method_name(event_name) or _coerce_method_name(message.get("method"))
     if method in {
         "turn/completed",
         "turn/failed",

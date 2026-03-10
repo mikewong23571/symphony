@@ -9,6 +9,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from symphony.management.commands.run_orchestrator import Command
 from symphony.management.commands.run_orchestrator import Orchestrator as CommandOrchestrator
+from symphony.observability.runtime import get_runtime_observability_config
 
 MINIMAL_VALID_WORKFLOW = """---
 tracker:
@@ -37,6 +38,23 @@ tracker:
   kind: linear
   api_key: linear-token
   project_slug: symphony
+observability:
+  snapshot_path: .runtime/snapshot.json
+  refresh_request_path: .runtime/refresh.json
+  recovery_path: .runtime/recovery.json
+  snapshot_max_age_seconds: 45
+---
+# Prompt body
+"""
+
+
+WORKFLOW_WITH_HTTP_PORT_AND_OBSERVABILITY = """---
+tracker:
+  kind: linear
+  api_key: linear-token
+  project_slug: symphony
+server:
+  port: 43123
 observability:
   snapshot_path: .runtime/snapshot.json
   refresh_request_path: .runtime/refresh.json
@@ -221,6 +239,61 @@ def test_run_orchestrator_starts_http_server_from_workflow_port(
     output = stdout.getvalue()
     assert "Runtime dashboard listening on http://127.0.0.1:43123/" in output
     assert server_calls == [("127.0.0.1", 43123)]
+    assert fake_server.close_calls == 1
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+
+
+def test_run_orchestrator_applies_observability_config_before_starting_http_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT_AND_OBSERVABILITY)
+    stdout = StringIO()
+    calls: list[str] = []
+    observed_config: dict[str, object] = {}
+    fake_server = FakeHTTPServer()
+
+    def _start_http_server(*, host: str, port: int) -> FakeHTTPServer:
+        runtime_config = get_runtime_observability_config()
+        observed_config["host"] = host
+        observed_config["port"] = port
+        observed_config["snapshot_path"] = runtime_config.snapshot_path
+        observed_config["refresh_request_path"] = runtime_config.refresh_request_path
+        observed_config["recovery_path"] = runtime_config.recovery_path
+        observed_config["snapshot_max_age_seconds"] = runtime_config.snapshot_max_age_seconds
+        return fake_server
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "symphony.management.commands.run_orchestrator.start_runtime_http_server",
+        _start_http_server,
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "run_once",
+        fake_async_method(calls, "run_once"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
+
+    call_command("run_orchestrator", "--once", stdout=stdout)
+
+    assert observed_config == {
+        "host": "127.0.0.1",
+        "port": 43123,
+        "snapshot_path": Path(".runtime/snapshot.json"),
+        "refresh_request_path": Path(".runtime/refresh.json"),
+        "recovery_path": Path(".runtime/recovery.json"),
+        "snapshot_max_age_seconds": 45,
+    }
     assert fake_server.close_calls == 1
     assert calls == ["run_once", "wait_for_running_workers", "aclose"]
 

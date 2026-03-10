@@ -14,6 +14,7 @@ from symphony.agent_runner.events import UsageSnapshot
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     get_runtime_issue_snapshot,
+    get_runtime_recovery_path,
     get_runtime_refresh_request_path,
     get_runtime_snapshot_path,
     queue_runtime_refresh_request,
@@ -21,6 +22,7 @@ from symphony.observability.runtime import (
 from symphony.observability.snapshots import parse_snapshot_timestamp
 from symphony.orchestrator import Orchestrator
 from symphony.orchestrator.core import CodexTotals, RunningEntry
+from symphony.orchestrator.recovery import load_recovery_state
 from symphony.tracker.models import Issue, IssueBlocker
 from symphony.workflow import WorkflowRuntime
 from symphony.workflow.config import ServiceConfig, build_service_config
@@ -1266,6 +1268,71 @@ def test_orchestrator_ignores_non_absolute_usage_updates(tmp_path: Path) -> None
     asyncio.run(run_test())
 
 
+def test_orchestrator_does_not_double_count_repeated_absolute_usage_totals(tmp_path: Path) -> None:
+    config = build_config(tmp_path=tmp_path)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task: asyncio.Task[None] = asyncio.create_task(asyncio.sleep(0))
+        issue = build_issue()
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=None,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=datetime.now(UTC),
+        )
+
+        repeated_total = UsageSnapshot(input_tokens=10, output_tokens=5, total_tokens=15)
+        event = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            codex_app_server_pid=123,
+            usage=repeated_total,
+            payload={"phase": "turn_running"},
+        )
+
+        try:
+            await orchestrator._handle_worker_event(issue.id, event)
+            await orchestrator._handle_worker_event(issue.id, event)
+            await orchestrator._handle_worker_exit(
+                issue.id,
+                AttemptResult(
+                    status="succeeded",
+                    issue=issue,
+                    attempt=None,
+                    workspace_path=tmp_path / "workspaces" / issue.identifier,
+                    session_id="thr_123-turn_1",
+                    thread_id="thr_123",
+                    turn_id="turn_1",
+                    turns_run=1,
+                    error_code=None,
+                    message=None,
+                ),
+            )
+
+            assert orchestrator.state.codex_totals.input_tokens == 10
+            assert orchestrator.state.codex_totals.output_tokens == 5
+            assert orchestrator.state.codex_totals.total_tokens == 15
+        finally:
+            worker_task.cancel()
+            await asyncio.gather(worker_task, return_exceptions=True)
+            await monitor_task
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
 def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_limits(
     tmp_path: Path,
 ) -> None:
@@ -1884,12 +1951,13 @@ def test_orchestrator_worker_exit_persists_retry_without_empty_recovery_gap(
             codex_total_tokens=140,
         )
 
-        def record_recovery_publish(state: object) -> Path:
+        def record_recovery_publish(path: Path, state: object) -> Path:
             assert hasattr(state, "to_payload")
             payload = cast(Any, state).to_payload()
             assert isinstance(payload, dict)
+            assert path == get_runtime_recovery_path()
             published_recovery_payloads.append(payload)
-            return tmp_path / "runtime-recovery.json"
+            return path
 
         monkeypatch.setattr(
             "symphony.orchestrator.core.publish_recovery_state",
@@ -1944,6 +2012,53 @@ def test_orchestrator_worker_exit_persists_retry_without_empty_recovery_gap(
             worker_task.cancel()
             await asyncio.gather(worker_task, return_exceptions=True)
             await asyncio.gather(monitor_task, return_exceptions=True)
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_aclose_preserves_running_entries_in_recovery(tmp_path: Path) -> None:
+    issue = build_issue(issue_id="issue-shutdown", identifier="SYM-SHUTDOWN")
+    recovery_path = tmp_path / "runtime-recovery.json"
+    config = build_config(tmp_path=tmp_path, recovery_path=recovery_path)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+
+        async def pending_attempt() -> AttemptResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("unreachable")
+
+        worker_task = asyncio.create_task(pending_attempt())
+        monitor_task = asyncio.create_task(asyncio.sleep(0))
+        orchestrator.state.running[issue.id] = RunningEntry(
+            issue=issue,
+            attempt=2,
+            worker_task=worker_task,
+            monitor_task=monitor_task,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            started_at=datetime(2026, 3, 10, 10, 0, tzinfo=UTC),
+            turn_count=4,
+            session_id="thread-1-turn-4",
+            thread_id="thread-1",
+            turn_id="turn-4",
+            codex_app_server_pid=4321,
+            last_codex_event="turn_completed",
+            last_codex_timestamp=datetime(2026, 3, 10, 10, 3, tzinfo=UTC),
+            codex_input_tokens=100,
+            codex_output_tokens=40,
+            codex_total_tokens=140,
+        )
+
+        await orchestrator.aclose()
+
+        recovery_state = load_recovery_state(recovery_path)
+        assert recovery_state is not None
+        assert recovery_state.retrying == ()
+        assert len(recovery_state.running) == 1
+        assert recovery_state.running[0].issue_id == issue.id
+        assert recovery_state.running[0].attempt == 2
+        assert recovery_state.running[0].session.session_id == "thread-1-turn-4"
+        assert recovery_state.running[0].session.total_tokens == 140
 
     asyncio.run(run_test())
 
