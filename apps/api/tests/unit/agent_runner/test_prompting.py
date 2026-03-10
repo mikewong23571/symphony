@@ -6,6 +6,8 @@ import pytest
 from symphony.agent_runner import (
     DEFAULT_FALLBACK_PROMPT,
     PromptTemplateError,
+    PromptTemplateParseError,
+    PromptTemplateRenderError,
     build_continuation_guidance,
     render_issue_prompt,
 )
@@ -58,14 +60,28 @@ def test_render_issue_prompt_uses_fallback_for_empty_template() -> None:
     assert render_issue_prompt("   ", build_issue()) == DEFAULT_FALLBACK_PROMPT
 
 
+def test_render_issue_prompt_rejects_invalid_template_syntax() -> None:
+    with pytest.raises(PromptTemplateParseError, match="could not be parsed") as exc_info:
+        render_issue_prompt("{% if issue.identifier %}", build_issue())
+
+    assert isinstance(exc_info.value, PromptTemplateError)
+    assert exc_info.value.code == "template_parse_error"
+
+
 def test_render_issue_prompt_rejects_unknown_variables() -> None:
-    with pytest.raises(PromptTemplateError, match="could not be rendered"):
+    with pytest.raises(PromptTemplateRenderError, match="could not be rendered") as exc_info:
         render_issue_prompt("{{ issue.missing_field }}", build_issue())
+
+    assert isinstance(exc_info.value, PromptTemplateError)
+    assert exc_info.value.code == "template_render_error"
 
 
 def test_render_issue_prompt_rejects_unknown_filters() -> None:
-    with pytest.raises(PromptTemplateError, match="could not be rendered"):
+    with pytest.raises(PromptTemplateParseError, match="could not be parsed") as exc_info:
         render_issue_prompt("{{ issue.identifier | missing_filter }}", build_issue())
+
+    assert isinstance(exc_info.value, PromptTemplateError)
+    assert exc_info.value.code == "template_parse_error"
 
 
 def test_build_continuation_guidance_is_continuation_only() -> None:

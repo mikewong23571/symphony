@@ -5,7 +5,6 @@ import copy
 import json
 import logging
 import threading
-import warnings
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -154,7 +153,6 @@ class Orchestrator:
         self._started = False
         self._shutting_down = False
         self._cancel_reasons: dict[str, str] = {}
-        self._usage_semantics_warned = False
         self._last_workflow_reload_error_at: datetime | None = None
         self._workflow_listener_registered = False
         self._workflow_event_loop: asyncio.AbstractEventLoop | None = None
@@ -562,22 +560,7 @@ class Orchestrator:
             running_entry.last_codex_timestamp = event.timestamp
             running_entry.last_codex_message = _summarize_payload(event.payload)
 
-            if event.usage is not None:
-                if not self._usage_semantics_warned:
-                    warnings.warn(
-                        (
-                            "Codex usage event semantics are currently treated as cumulative "
-                            "snapshots. TODO: confirm whether app-server usage payloads are "
-                            "cumulative totals or per-event deltas before changing token "
-                            "aggregation behavior."
-                        ),
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    self._usage_semantics_warned = True
-                # TODO: Confirm whether event.usage values are cumulative snapshots or per-event
-                # deltas. The current implementation preserves the latest reported values and keeps
-                # last_reported_* as an anchor for future aggregation changes.
+            if event.usage is not None and event.usage.is_absolute_total:
                 running_entry.codex_input_tokens = event.usage.input_tokens
                 running_entry.codex_output_tokens = event.usage.output_tokens
                 running_entry.codex_total_tokens = event.usage.total_tokens

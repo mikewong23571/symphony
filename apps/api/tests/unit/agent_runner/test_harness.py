@@ -5,6 +5,7 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -33,16 +34,16 @@ class FakeTrackerClient:
         return []
 
 
-def build_issue(*, state: str = "In Progress") -> Issue:
+def build_issue(*, identifier: str = "SYM-123", state: str = "In Progress") -> Issue:
     return Issue(
         id="issue-1",
-        identifier="SYM-123",
+        identifier=identifier,
         title="Implement streaming runner",
         description="Make the agent runner stream full turns.",
         priority=1,
         state=state,
         branch_name=None,
-        url="https://linear.app/acme/issue/SYM-123",
+        url=f"https://linear.app/acme/issue/{identifier}",
         labels=("backend",),
         blocked_by=(),
         created_at=None,
@@ -163,6 +164,45 @@ def test_run_issue_attempt_runs_workspace_hooks(tmp_path: Path) -> None:
     assert (marker_dir / "after_run").is_file()
 
 
+def test_run_issue_attempt_removes_temporary_workspace_artifacts_before_before_run(
+    tmp_path: Path,
+) -> None:
+    log_path = tmp_path / "messages.jsonl"
+    marker_dir = tmp_path / "markers"
+    marker_dir.mkdir()
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=log_path,
+        hook_overrides={
+            "before_run": (
+                f"test ! -e tmp && test ! -e .elixir_ls && touch {marker_dir / 'before_run'}"
+            ),
+        },
+    )
+    workspace_manager = WorkspaceManager(config.workspace.root)
+    workspace = workspace_manager.ensure_workspace("SYM-123")
+    (workspace.path / "tmp").mkdir()
+    (workspace.path / ".elixir_ls").mkdir()
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+            workspace_manager=workspace_manager,
+        )
+        assert result.status == "succeeded"
+
+    asyncio.run(run_test())
+
+    assert (marker_dir / "before_run").is_file()
+    assert not (workspace.path / "tmp").exists()
+    assert not (workspace.path / ".elixir_ls").exists()
+
+
 def test_run_issue_attempt_uses_latest_hook_config_for_after_run(tmp_path: Path) -> None:
     log_path = tmp_path / "messages.jsonl"
     marker_dir = tmp_path / "markers"
@@ -271,6 +311,115 @@ def test_run_issue_attempt_logs_after_run_best_effort_failures(
     assert "event=hook_failed hook=after_run" in caplog.text
     assert "issue_id=issue-1" in caplog.text
     assert "issue_identifier=SYM-123" in caplog.text
+
+
+def test_run_issue_attempt_logs_workspace_prepare_failures(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=tmp_path / "messages.jsonl",
+    )
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
+
+    def fail_cleanup(_self: WorkspaceManager, _workspace_path: Path) -> tuple[str, ...]:
+        raise WorkspaceRemoveError("cleanup failed")
+
+    monkeypatch.setattr(WorkspaceManager, "remove_temporary_artifacts", fail_cleanup)
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "workspace_remove_error"
+
+    asyncio.run(run_test())
+
+    assert "event=workspace_prepare_failed" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+    assert "error_code=workspace_remove_error" in caplog.text
+
+
+def test_run_issue_attempt_logs_workspace_resolution_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    config = build_config(
+        tmp_path=tmp_path,
+        mode="stream_success",
+        log_path=tmp_path / "messages.jsonl",
+    )
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(identifier=".."),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "invalid_workspace_identifier"
+
+    asyncio.run(run_test())
+
+    assert "event=workspace_resolution_failed" in caplog.text
+    assert "error_code=invalid_workspace_identifier" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("prompt_template", "error_code"),
+    [
+        ("{% if issue.identifier %}", "template_parse_error"),
+        ("{{ issue.missing_field }}", "template_render_error"),
+    ],
+)
+def test_run_issue_attempt_logs_prompt_template_failures(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    prompt_template: str,
+    error_code: str,
+) -> None:
+    marker_path = tmp_path / "before_run.marker"
+    config = replace(
+        build_config(
+            tmp_path=tmp_path,
+            mode="stream_success",
+            log_path=tmp_path / "messages.jsonl",
+            hook_overrides={"before_run": f"touch {marker_path}"},
+        ),
+        prompt_template=prompt_template,
+    )
+    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
+
+    async def run_test() -> None:
+        result = await run_issue_attempt(
+            issue=build_issue(),
+            attempt=1,
+            config=config,
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            tracker_client=FakeTrackerClient([build_issue(state="Done")]),
+        )
+        assert result.status == "failed"
+        assert result.error_code == error_code
+
+    asyncio.run(run_test())
+
+    assert "event=prompt_template_failed" in caplog.text
+    assert "issue_id=issue-1" in caplog.text
+    assert "issue_identifier=SYM-123" in caplog.text
+    assert f"error_code={error_code}" in caplog.text
+    assert not marker_path.exists()
 
 
 @pytest.mark.parametrize(

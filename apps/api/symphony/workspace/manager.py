@@ -106,6 +106,32 @@ class WorkspaceManager:
             ) from exc
         return True
 
+    def remove_temporary_artifacts(self, workspace_path: Path) -> tuple[str, ...]:
+        workspace_path = workspace_path.resolve(strict=False)
+        _ensure_path_within_root(self.root, workspace_path)
+
+        removed: list[str] = []
+        # `.elixir_ls` is editor-generated workspace cache state that is safe to recreate.
+        for artifact_name in ("tmp", ".elixir_ls"):
+            artifact_path = (workspace_path / artifact_name).resolve(strict=False)
+            _ensure_path_within_root(self.root, artifact_path)
+            if not artifact_path.exists():
+                continue
+
+            try:
+                if artifact_path.is_dir():
+                    shutil.rmtree(artifact_path)
+                else:
+                    artifact_path.unlink()
+            except OSError as exc:
+                raise WorkspaceRemoveError(
+                    f"Could not remove temporary workspace artifact: {artifact_path}"
+                ) from exc
+
+            removed.append(artifact_name)
+
+        return tuple(removed)
+
     def _ensure_root_directory(self) -> Path:
         try:
             self.root.mkdir(parents=True, exist_ok=True)

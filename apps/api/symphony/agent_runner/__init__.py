@@ -14,6 +14,8 @@ from .harness import AttemptResult, run_issue_attempt
 from .prompting import (
     DEFAULT_FALLBACK_PROMPT,
     PromptTemplateError,
+    PromptTemplateParseError,
+    PromptTemplateRenderError,
     build_continuation_guidance,
     render_issue_prompt,
 )
@@ -29,6 +31,8 @@ __all__ = [
     "AppServerStartupError",
     "DEFAULT_FALLBACK_PROMPT",
     "PromptTemplateError",
+    "PromptTemplateParseError",
+    "PromptTemplateRenderError",
     "TurnResult",
     "UsageSnapshot",
     "build_continuation_guidance",

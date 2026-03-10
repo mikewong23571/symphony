@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import warnings
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1174,7 +1173,7 @@ def test_orchestrator_logs_before_remove_hook_start_failures(
     assert "issue_identifier=SYM-123" in caplog.text
 
 
-def test_orchestrator_warns_once_about_unknown_usage_semantics(tmp_path: Path) -> None:
+def test_orchestrator_ignores_non_absolute_usage_updates(tmp_path: Path) -> None:
     config = build_config(tmp_path=tmp_path)
 
     async def done_result() -> AttemptResult:
@@ -1211,16 +1210,21 @@ def test_orchestrator_warns_once_about_unknown_usage_semantics(tmp_path: Path) -
             thread_id="thr_123",
             turn_id="turn_1",
             codex_app_server_pid=123,
-            usage=UsageSnapshot(input_tokens=10, output_tokens=5, total_tokens=15),
+            usage=UsageSnapshot(
+                input_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                is_absolute_total=False,
+            ),
             payload={},
         )
 
-        with pytest.warns(RuntimeWarning, match="cumulative snapshots"):
-            await orchestrator._handle_worker_event("issue-1", event)
-        with warnings.catch_warnings(record=True) as warnings_record:
-            warnings.simplefilter("always")
-            await orchestrator._handle_worker_event("issue-1", event)
-        assert len(warnings_record) == 0
+        await orchestrator._handle_worker_event("issue-1", event)
+
+        running_entry = orchestrator.state.running["issue-1"]
+        assert running_entry.codex_input_tokens == 0
+        assert running_entry.codex_output_tokens == 0
+        assert running_entry.codex_total_tokens == 0
 
         await asyncio.gather(worker_task, monitor_task)
         await orchestrator.aclose()
@@ -1274,17 +1278,32 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
                 "rate_limits": {"requests_remaining": 7, "tokens_remaining": 900},
             },
         )
-        second_event_same_turn = AgentRuntimeEvent(
+        second_event_same_totals = AgentRuntimeEvent(
             event="notification",
             timestamp=datetime.now(UTC),
             session_id="thr_123-turn_1",
             thread_id="thr_123",
             turn_id="turn_1",
             codex_app_server_pid=123,
-            usage=None,
-            payload={"phase": "still_turn_1"},
+            usage=UsageSnapshot(input_tokens=10, output_tokens=5, total_tokens=15),
+            payload={"phase": "still_turn_1_same_totals"},
         )
-        third_event_next_turn = AgentRuntimeEvent(
+        third_event_delta_only = AgentRuntimeEvent(
+            event="notification",
+            timestamp=datetime.now(UTC),
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            codex_app_server_pid=123,
+            usage=UsageSnapshot(
+                input_tokens=3,
+                output_tokens=2,
+                total_tokens=5,
+                is_absolute_total=False,
+            ),
+            payload={"phase": "delta_only_ignored"},
+        )
+        fourth_event_next_turn = AgentRuntimeEvent(
             event="notification",
             timestamp=datetime.now(UTC),
             session_id="thr_123-turn_2",
@@ -1296,10 +1315,10 @@ def test_orchestrator_runtime_snapshot_includes_running_retry_totals_and_rate_li
         )
 
         try:
-            with pytest.warns(RuntimeWarning, match="cumulative snapshots"):
-                await orchestrator._handle_worker_event(issue.id, event)
-            await orchestrator._handle_worker_event(issue.id, second_event_same_turn)
-            await orchestrator._handle_worker_event(issue.id, third_event_next_turn)
+            await orchestrator._handle_worker_event(issue.id, event)
+            await orchestrator._handle_worker_event(issue.id, second_event_same_totals)
+            await orchestrator._handle_worker_event(issue.id, third_event_delta_only)
+            await orchestrator._handle_worker_event(issue.id, fourth_event_next_turn)
             await orchestrator._schedule_retry(
                 issue_id=retry_issue.id,
                 identifier=retry_issue.identifier,
@@ -1553,8 +1572,7 @@ def test_orchestrator_tolerates_runtime_snapshot_publish_failures(tmp_path: Path
                 payload={},
             )
 
-            with pytest.warns(RuntimeWarning, match="cumulative snapshots"):
-                await orchestrator._handle_worker_event("issue-1", event)
+            await orchestrator._handle_worker_event("issue-1", event)
 
             snapshot = orchestrator.get_runtime_snapshot()
             assert snapshot["counts"]["running"] == 1

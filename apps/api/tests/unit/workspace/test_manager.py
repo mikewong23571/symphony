@@ -8,6 +8,7 @@ from symphony.workspace import (
     UnsafeWorkspacePathError,
     WorkspaceManager,
     WorkspacePathCollisionError,
+    WorkspaceRemoveError,
     sanitize_issue_identifier,
 )
 
@@ -91,3 +92,44 @@ def test_relative_workspace_root_is_normalized_to_absolute_path(
     workspace = manager.ensure_workspace("SYM-202")
 
     assert workspace.path == (tmp_path / "relative-workspaces" / "SYM-202").resolve()
+
+
+def test_remove_temporary_artifacts_removes_known_workspace_paths(tmp_path: Path) -> None:
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    workspace = manager.ensure_workspace("SYM-303")
+    (workspace.path / "tmp").mkdir()
+    (workspace.path / ".elixir_ls").mkdir()
+    (workspace.path / "keep.txt").write_text("keep", encoding="utf-8")
+
+    removed = manager.remove_temporary_artifacts(workspace.path)
+
+    assert removed == ("tmp", ".elixir_ls")
+    assert not (workspace.path / "tmp").exists()
+    assert not (workspace.path / ".elixir_ls").exists()
+    assert (workspace.path / "keep.txt").is_file()
+
+
+def test_remove_temporary_artifacts_is_idempotent(tmp_path: Path) -> None:
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    workspace = manager.ensure_workspace("SYM-404")
+
+    assert manager.remove_temporary_artifacts(workspace.path) == ()
+    assert manager.remove_temporary_artifacts(workspace.path) == ()
+
+
+def test_remove_temporary_artifacts_raises_on_removal_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manager = WorkspaceManager(tmp_path / "workspaces")
+    workspace = manager.ensure_workspace("SYM-505")
+    (workspace.path / "tmp").mkdir()
+
+    def fail_rmtree(path: Path) -> None:
+        del path
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("symphony.workspace.manager.shutil.rmtree", fail_rmtree)
+
+    with pytest.raises(WorkspaceRemoveError, match="Could not remove temporary workspace artifact"):
+        manager.remove_temporary_artifacts(workspace.path)

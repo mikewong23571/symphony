@@ -12,7 +12,7 @@ from symphony.common.types import ServiceInfo
 from symphony.observability.logging import log_event
 from symphony.tracker.models import Issue
 from symphony.workflow.config import ServiceConfig
-from symphony.workspace import Workspace, WorkspaceError, WorkspaceManager
+from symphony.workspace import Workspace, WorkspaceError, WorkspaceManager, WorkspaceRemoveError
 from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
 
 from .client import (
@@ -23,7 +23,11 @@ from .client import (
     start_next_turn,
 )
 from .events import AgentRuntimeEvent, utcnow
-from .prompting import build_continuation_guidance, render_issue_prompt
+from .prompting import (
+    PromptTemplateError,
+    build_continuation_guidance,
+    render_issue_prompt,
+)
 from .runner import stream_turn
 
 logger = logging.getLogger(__name__)
@@ -88,8 +92,10 @@ async def run_issue_attempt(
     )
 
     try:
+        prompt_text = render_issue_prompt(config.prompt_template, current_issue, attempt=attempt)
         workspace = manager.ensure_workspace(issue.identifier)
         workspace_path = workspace.path
+        manager.remove_temporary_artifacts(workspace.path)
         after_create_succeeded = not workspace.created_now
 
         if workspace.created_now:
@@ -111,7 +117,6 @@ async def run_issue_attempt(
         )
         after_run_needed = True
 
-        prompt_text = render_issue_prompt(config.prompt_template, current_issue, attempt=attempt)
         session = await start_app_server_session(
             command=config.codex.command,
             workspace_path=workspace.path,
@@ -216,6 +221,28 @@ async def run_issue_attempt(
     except asyncio.CancelledError:
         raise
     except WorkspaceError as exc:
+        _log_workspace_prepare_failure(
+            issue=current_issue,
+            workspace_path=workspace_path,
+            exc=exc,
+        )
+        return _build_attempt_result(
+            status="failed",
+            issue=current_issue,
+            attempt=attempt,
+            workspace_path=workspace_path,
+            session=session,
+            turns_run=turns_run,
+            error_code=exc.code,
+            message=exc.message,
+        )
+    except PromptTemplateError as exc:
+        _log_prompt_template_failure(
+            issue=current_issue,
+            workspace_path=workspace_path,
+            session_id=session.session_id if session is not None else None,
+            exc=exc,
+        )
         return _build_attempt_result(
             status="failed",
             issue=current_issue,
@@ -513,6 +540,53 @@ def _log_hook_error(
         event_name,
         fields={
             "hook": name,
+            "issue_id": issue.id,
+            "issue_identifier": issue.identifier,
+            "session_id": session_id,
+            "workspace_path": workspace_path,
+            "error_code": exc.code,
+            "message": exc.message,
+        },
+    )
+
+
+def _log_workspace_prepare_failure(
+    *,
+    issue: Issue,
+    workspace_path: Path,
+    exc: WorkspaceError,
+) -> None:
+    event_name = (
+        "workspace_prepare_failed"
+        if isinstance(exc, WorkspaceRemoveError)
+        else "workspace_resolution_failed"
+    )
+    log_event(
+        logger,
+        logging.WARNING,
+        event_name,
+        fields={
+            "issue_id": issue.id,
+            "issue_identifier": issue.identifier,
+            "workspace_path": workspace_path,
+            "error_code": exc.code,
+            "message": exc.message,
+        },
+    )
+
+
+def _log_prompt_template_failure(
+    *,
+    issue: Issue,
+    workspace_path: Path,
+    session_id: str | None,
+    exc: PromptTemplateError,
+) -> None:
+    log_event(
+        logger,
+        logging.WARNING,
+        "prompt_template_failed",
+        fields={
             "issue_id": issue.id,
             "issue_identifier": issue.identifier,
             "session_id": session_id,

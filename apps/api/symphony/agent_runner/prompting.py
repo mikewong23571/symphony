@@ -8,14 +8,23 @@ from jinja2.exceptions import TemplateAssertionError, TemplateError, TemplateSyn
 from symphony.tracker.models import Issue
 
 DEFAULT_FALLBACK_PROMPT = "You are working on an issue from Linear."
+PROMPT_TEMPLATE_ENVIRONMENT = Environment(undefined=StrictUndefined, autoescape=False)
 
 
 class PromptTemplateError(Exception):
-    code = "template_parse_error"
+    code = "prompt_template_error"
 
     def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
+
+
+class PromptTemplateParseError(PromptTemplateError):
+    code = "template_parse_error"
+
+
+class PromptTemplateRenderError(PromptTemplateError):
+    code = "template_render_error"
 
 
 def render_issue_prompt(
@@ -27,13 +36,15 @@ def render_issue_prompt(
     if not prompt_template.strip():
         return DEFAULT_FALLBACK_PROMPT
 
-    environment = Environment(undefined=StrictUndefined, autoescape=False)
+    try:
+        template = PROMPT_TEMPLATE_ENVIRONMENT.from_string(prompt_template)
+    except (TemplateAssertionError, TemplateSyntaxError) as exc:
+        raise PromptTemplateParseError("Workflow prompt template could not be parsed.") from exc
 
     try:
-        template = environment.from_string(prompt_template)
         rendered = template.render(issue=asdict(issue), attempt=attempt)
-    except (TemplateAssertionError, TemplateSyntaxError, TemplateError) as exc:
-        raise PromptTemplateError("Workflow prompt template could not be rendered.") from exc
+    except TemplateError as exc:
+        raise PromptTemplateRenderError("Workflow prompt template could not be rendered.") from exc
 
     return rendered.strip()
 
