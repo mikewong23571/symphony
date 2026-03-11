@@ -33,7 +33,11 @@ from symphony.orchestrator.core import CodexTotals, RunningEntry
 from symphony.orchestrator.recovery import load_recovery_state
 from symphony.tracker.models import Issue, IssueBlocker
 from symphony.workflow import WorkflowRuntime
-from symphony.workflow.config import ServiceConfig, build_service_config
+from symphony.workflow.config import (
+    ServiceConfig,
+    build_service_config,
+    require_linear_tracker_config,
+)
 from symphony.workflow.loader import WorkflowDefinition
 from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
 
@@ -171,6 +175,7 @@ def write_runtime_workflow(
     prompt_template: str = "Prompt body",
     poll_interval_ms: int = 60_000,
     max_concurrent_agents: int = 2,
+    tracker_project_slug: str = "symphony",
     workspace_root: Path | None = None,
     snapshot_path: Path | None = None,
     refresh_request_path: Path | None = None,
@@ -196,7 +201,7 @@ def write_runtime_workflow(
             "tracker:\n"
             "  kind: linear\n"
             "  api_key: linear-token\n"
-            "  project_slug: symphony\n"
+            f"  project_slug: {tracker_project_slug}\n"
             "polling:\n"
             f"  interval_ms: {poll_interval_ms}\n"
             "agent:\n"
@@ -618,6 +623,48 @@ def test_orchestrator_applies_reloaded_config_to_future_dispatches(tmp_path: Pat
             ]
             assert orchestrator.state.poll_interval_ms == 1_234
             assert orchestrator.state.max_concurrent_agents == 5
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_rebuilds_owned_tracker_client_when_tracker_config_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workflow_path = write_runtime_workflow(
+        tmp_path / "WORKFLOW.md",
+        tracker_project_slug="symphony-a",
+    )
+    workflow_runtime = WorkflowRuntime(workflow_path)
+    config = workflow_runtime.load_initial()
+    built_project_slugs: list[str | None] = []
+    clients = [FakeTrackerClient(), FakeTrackerClient()]
+
+    def build_client(service_config: ServiceConfig) -> FakeTrackerClient:
+        built_project_slugs.append(
+            require_linear_tracker_config(service_config.tracker).project_slug
+        )
+        return clients[len(built_project_slugs) - 1]
+
+    monkeypatch.setattr("symphony.orchestrator.core.build_tracker_read_client", build_client)
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
+        try:
+            assert orchestrator.tracker_client is clients[0]
+            assert built_project_slugs == ["symphony-a"]
+
+            write_runtime_workflow(
+                workflow_path,
+                tracker_project_slug="symphony-b",
+            )
+
+            await orchestrator._reload_workflow_config_if_needed()
+
+            assert orchestrator.tracker_client is clients[1]
+            assert built_project_slugs == ["symphony-a", "symphony-b"]
         finally:
             await orchestrator.aclose()
 
