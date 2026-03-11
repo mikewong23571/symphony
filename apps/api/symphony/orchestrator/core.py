@@ -42,7 +42,13 @@ from symphony.orchestrator.recovery import (
     publish_recovery_state,
 )
 from symphony.tracker import Issue, LinearTrackerClient
-from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
+from symphony.workflow import (
+    LinearTrackerConfig,
+    ServiceConfig,
+    UnsupportedTrackerKindError,
+    WorkflowRuntime,
+    validate_dispatch_config,
+)
 from symphony.workspace import WorkspaceError, WorkspaceManager
 from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
 
@@ -57,6 +63,15 @@ class TrackerClientProtocol(Protocol):
     def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]: ...
 
     def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]: ...
+
+
+def _require_linear_tracker_config(config: ServiceConfig) -> LinearTrackerConfig:
+    if isinstance(config.tracker, LinearTrackerConfig) and config.tracker.kind == "linear":
+        return config.tracker
+
+    raise UnsupportedTrackerKindError(
+        "tracker.kind must be set to the supported tracker kind 'linear'."
+    )
 
 
 class WorkerRunner(Protocol):
@@ -156,7 +171,9 @@ class Orchestrator:
         self._workflow_runtime = workflow_runtime
         self._owns_tracker_client = tracker_client is None
         self._owns_workspace_manager = workspace_manager is None
-        self.tracker_client = tracker_client or LinearTrackerClient(config.tracker)
+        self.tracker_client = tracker_client or LinearTrackerClient(
+            _require_linear_tracker_config(config)
+        )
         self.worker_runner = worker_runner
         self.workspace_manager = workspace_manager or WorkspaceManager(config.workspace.root)
         self.service_info = service_info or ServiceInfo(name="symphony", version="0.1.0")
@@ -1204,7 +1221,7 @@ class Orchestrator:
         self.state.max_concurrent_agents = config.agent.max_concurrent_agents
 
         if self._owns_tracker_client and config.tracker != previous_config.tracker:
-            self.tracker_client = LinearTrackerClient(config.tracker)
+            self.tracker_client = LinearTrackerClient(_require_linear_tracker_config(config))
         if self._owns_workspace_manager and config.workspace.root != previous_config.workspace.root:
             previous_manager = self.workspace_manager
             self.workspace_manager = WorkspaceManager(config.workspace.root)

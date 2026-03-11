@@ -13,9 +13,14 @@ from symphony.workflow import (
     DEFAULT_TERMINAL_STATES,
     DEFAULT_WORKSPACE_ROOT,
     InvalidServerPortError,
+    LinearTrackerConfig,
     MissingCodexCommandError,
+    MissingTrackerAPIBaseUrlError,
     MissingTrackerAPIKeyError,
+    MissingTrackerProjectIdError,
     MissingTrackerProjectSlugError,
+    MissingTrackerWorkspaceSlugError,
+    PlaneTrackerConfig,
     ServiceConfig,
     UnsupportedTrackerKindError,
     WorkflowDefinition,
@@ -32,7 +37,9 @@ def test_build_service_config_applies_defaults() -> None:
     config = build_service_config(build_definition({}))
 
     assert config.prompt_template == "Prompt body"
+    assert isinstance(config.tracker, LinearTrackerConfig)
     assert config.tracker.kind is None
+    assert config.tracker.endpoint == "https://api.linear.app/graphql"
     assert config.tracker.active_states == DEFAULT_ACTIVE_STATES
     assert config.tracker.terminal_states == DEFAULT_TERMINAL_STATES
     assert config.workspace.root == DEFAULT_WORKSPACE_ROOT
@@ -151,6 +158,34 @@ def test_build_service_config_parses_states_and_agent_limits() -> None:
     assert config.agent.max_concurrent_agents_by_state == {"todo": 2, "blocked": 3}
 
 
+def test_build_service_config_builds_plane_tracker_config() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example.com",
+                    "api_key": "$PLANE_KEY",
+                    "workspace_slug": "engineering",
+                    "project_id": "project-123",
+                    "active_states": ["Todo", "In Progress", "Blocked"],
+                    "terminal_states": "Done, Canceled",
+                }
+            }
+        ),
+        env={"PLANE_KEY": "plane-token"},
+    )
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.kind == "plane"
+    assert config.tracker.api_base_url == "https://plane.example.com"
+    assert config.tracker.api_key == "plane-token"
+    assert config.tracker.workspace_slug == "engineering"
+    assert config.tracker.project_id == "project-123"
+    assert config.tracker.active_states == ("Todo", "In Progress", "Blocked")
+    assert config.tracker.terminal_states == ("Done", "Canceled")
+
+
 def test_build_service_config_parses_optional_server_port() -> None:
     config = build_service_config(build_definition({"server": {"port": "0"}}))
 
@@ -175,11 +210,55 @@ def test_build_service_config_rejects_invalid_server_port(raw_port: object) -> N
         (
             {
                 "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example.com",
+                    "workspace_slug": "engineering",
+                    "project_id": "project-123",
+                }
+            },
+            MissingTrackerAPIKeyError,
+        ),
+        (
+            {
+                "tracker": {
                     "kind": "linear",
                     "api_key": "linear-token",
                 }
             },
             MissingTrackerProjectSlugError,
+        ),
+        (
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_key": "plane-token",
+                    "workspace_slug": "engineering",
+                    "project_id": "project-123",
+                }
+            },
+            MissingTrackerAPIBaseUrlError,
+        ),
+        (
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_key": "plane-token",
+                    "api_base_url": "https://plane.example.com",
+                    "project_id": "project-123",
+                }
+            },
+            MissingTrackerWorkspaceSlugError,
+        ),
+        (
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_key": "plane-token",
+                    "api_base_url": "https://plane.example.com",
+                    "workspace_slug": "engineering",
+                }
+            },
+            MissingTrackerProjectIdError,
         ),
         (
             {
@@ -218,6 +297,26 @@ def test_validate_dispatch_config_accepts_minimal_valid_linear_config() -> None:
                     "kind": "linear",
                     "api_key": "linear-token",
                     "project_slug": "symphony",
+                }
+            }
+        )
+    )
+
+    validate_dispatch_config(service_config)
+
+    assert isinstance(service_config, ServiceConfig)
+
+
+def test_validate_dispatch_config_accepts_minimal_valid_plane_config() -> None:
+    service_config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example.com",
+                    "api_key": "plane-token",
+                    "workspace_slug": "engineering",
+                    "project_id": "project-123",
                 }
             }
         )

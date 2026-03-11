@@ -8,7 +8,7 @@ from typing import Protocol, TypeVar
 from urllib.parse import urlparse
 
 from symphony.observability.logging import log_event
-from symphony.workflow import ServiceConfig
+from symphony.workflow import LinearTrackerConfig, ServiceConfig, UnsupportedTrackerKindError
 
 from .linear import LinearPayloadError
 from .linear_client import (
@@ -366,6 +366,11 @@ class TrackerMutationService:
 
 
 def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationService:
+    if not isinstance(config.tracker, LinearTrackerConfig) or config.tracker.kind != "linear":
+        raise UnsupportedTrackerKindError(
+            "tracker.kind must be set to the supported tracker kind 'linear'."
+        )
+
     return TrackerMutationService(
         backend=LinearTrackerClient(config.tracker),
         project_slug=config.tracker.project_slug,
