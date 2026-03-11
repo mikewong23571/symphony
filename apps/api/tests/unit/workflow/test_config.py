@@ -13,9 +13,14 @@ from symphony.workflow import (
     DEFAULT_TERMINAL_STATES,
     DEFAULT_WORKSPACE_ROOT,
     InvalidServerPortError,
+    LinearTrackerConfig,
     MissingCodexCommandError,
+    MissingTrackerAPIBaseURLError,
     MissingTrackerAPIKeyError,
+    MissingTrackerProjectIDError,
     MissingTrackerProjectSlugError,
+    MissingTrackerWorkspaceSlugError,
+    PlaneTrackerConfig,
     ServiceConfig,
     UnsupportedTrackerKindError,
     WorkflowDefinition,
@@ -32,6 +37,7 @@ def test_build_service_config_applies_defaults() -> None:
     config = build_service_config(build_definition({}))
 
     assert config.prompt_template == "Prompt body"
+    assert isinstance(config.tracker, LinearTrackerConfig)
     assert config.tracker.kind is None
     assert config.tracker.active_states == DEFAULT_ACTIVE_STATES
     assert config.tracker.terminal_states == DEFAULT_TERMINAL_STATES
@@ -44,6 +50,33 @@ def test_build_service_config_applies_defaults() -> None:
     assert config.hooks.timeout_ms == DEFAULT_HOOK_TIMEOUT_MS
     assert config.agent.max_turns == DEFAULT_MAX_TURNS
     assert config.codex.command == DEFAULT_CODEX_COMMAND
+
+
+def test_build_service_config_returns_plane_tracker_config_with_explicit_fields() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "api_key": "plane-token",
+                    "workspace_slug": "workspace",
+                    "project_id": 42,
+                    "active_states": "Todo, In Progress, Blocked",
+                    "terminal_states": ["Done", "Canceled"],
+                }
+            }
+        ),
+        env={"LINEAR_API_KEY": "ignored-linear-token"},
+    )
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.api_base_url == "https://plane.example"
+    assert config.tracker.api_key == "plane-token"
+    assert config.tracker.workspace_slug == "workspace"
+    assert config.tracker.project_id == "42"
+    assert config.tracker.active_states == ("Todo", "In Progress", "Blocked")
+    assert config.tracker.terminal_states == ("Done", "Canceled")
 
 
 def test_build_service_config_resolves_tracker_api_key_from_explicit_env_token() -> None:
@@ -70,6 +103,25 @@ def test_build_service_config_uses_canonical_linear_env_fallback() -> None:
     )
 
     assert config.tracker.api_key == "canonical-token"
+
+
+def test_build_service_config_does_not_use_canonical_linear_env_fallback_for_plane() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "workspace_slug": "workspace",
+                    "project_id": "plane-project",
+                }
+            }
+        ),
+        env={"LINEAR_API_KEY": "canonical-token"},
+    )
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.api_key is None
 
 
 def test_build_service_config_treats_empty_explicit_env_api_key_as_missing() -> None:
@@ -232,6 +284,65 @@ def test_validate_dispatch_config_surfaces_required_startup_errors(
         validate_dispatch_config(service_config)
 
 
+@pytest.mark.parametrize(
+    ("tracker_config", "error_type", "message"),
+    [
+        (
+            {
+                "kind": "plane",
+                "workspace_slug": "workspace",
+                "project_id": "project-123",
+                "api_key": "plane-token",
+            },
+            MissingTrackerAPIBaseURLError,
+            "tracker.api_base_url is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "project_id": "project-123",
+                "api_key": "plane-token",
+            },
+            MissingTrackerWorkspaceSlugError,
+            "tracker.workspace_slug is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "workspace_slug": "workspace",
+                "api_key": "plane-token",
+            },
+            MissingTrackerProjectIDError,
+            "tracker.project_id is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "workspace_slug": "workspace",
+                "project_id": "project-123",
+            },
+            MissingTrackerAPIKeyError,
+            "tracker.api_key is required when tracker.kind is 'plane'.",
+        ),
+    ],
+)
+def test_validate_dispatch_config_surfaces_plane_tracker_field_errors(
+    tracker_config: dict[str, Any],
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    service_config = build_service_config(
+        build_definition({"tracker": tracker_config}),
+        env={"LINEAR_API_KEY": "ignored-linear-token"},
+    )
+
+    with pytest.raises(error_type, match=message):
+        validate_dispatch_config(service_config)
+
+
 def test_default_workspace_root_uses_system_tempdir() -> None:
     config = build_service_config(build_definition({}))
 
@@ -254,3 +365,26 @@ def test_validate_dispatch_config_accepts_minimal_valid_linear_config() -> None:
     validate_dispatch_config(service_config)
 
     assert isinstance(service_config, ServiceConfig)
+    assert isinstance(service_config.tracker, LinearTrackerConfig)
+
+
+def test_validate_dispatch_config_rejects_fully_populated_plane_tracker_until_supported() -> None:
+    service_config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "api_key": "plane-token",
+                    "workspace_slug": "workspace",
+                    "project_id": "project-123",
+                }
+            }
+        )
+    )
+
+    with pytest.raises(
+        UnsupportedTrackerKindError,
+        match="tracker.kind must be set to the supported tracker kind 'linear'.",
+    ):
+        validate_dispatch_config(service_config)
