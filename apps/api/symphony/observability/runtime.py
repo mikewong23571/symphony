@@ -14,6 +14,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Protocol, cast
 
+from .events import publish_runtime_invalidation
 from .snapshots import isoformat_utc, parse_snapshot_timestamp, refresh_runtime_snapshot
 
 RUNTIME_SNAPSHOT_PATH_ENV_VAR = "SYMPHONY_RUNTIME_SNAPSHOT_PATH"
@@ -153,12 +154,14 @@ def queue_runtime_refresh_request(*, requested_at: datetime | None = None) -> di
             f"Runtime refresh request could not be written to {request_path}: {exc}."
         ) from exc
 
-    return {
+    response = {
         "queued": True,
         "coalesced": coalesced,
         "requested_at": active_request["requested_at"],
         "operations": active_request["operations"],
     }
+    publish_runtime_invalidation("refresh_queued", response)
+    return response
 
 
 def consume_runtime_refresh_request() -> dict[str, Any] | None:
@@ -318,6 +321,9 @@ def get_runtime_issue_snapshot(issue_identifier: str) -> dict[str, Any]:
     workspace = {"path": workspace_path} if isinstance(workspace_path, str) else None
 
     return {
+        "revision": snapshot.get("revision") if isinstance(snapshot.get("revision"), int) else 0,
+        "generated_at": snapshot.get("generated_at"),
+        "expires_at": snapshot.get("expires_at"),
         "issue_identifier": issue_identifier,
         "issue_id": issue_row.get("issue_id"),
         "status": "running" if running_row is not None else "retrying",

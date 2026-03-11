@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from symphony.agent_runner import AgentRuntimeEvent, AttemptResult, run_issue_attempt
 from symphony.common.types import ServiceInfo
+from symphony.observability.events import publish_runtime_invalidation
 from symphony.observability.logging import log_event
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
@@ -169,8 +170,10 @@ class Orchestrator:
         self._runtime_snapshot_lock = threading.Lock()
         self._runtime_snapshot_task: asyncio.Task[None] | None = None
         self._runtime_snapshot_owner_token = uuid4().hex
+        self._runtime_snapshot_revision = 0
         self._runtime_snapshot: dict[str, Any] = self._build_runtime_snapshot(
-            generated_at=datetime.now(UTC)
+            generated_at=datetime.now(UTC),
+            revision=self._runtime_snapshot_revision,
         )
 
     async def startup(self) -> None:
@@ -1057,11 +1060,23 @@ class Orchestrator:
             return
 
     def _refresh_runtime_snapshot(self) -> None:
-        snapshot = self._build_runtime_snapshot(generated_at=datetime.now(UTC))
         with self._runtime_snapshot_lock:
+            previous_snapshot = copy.deepcopy(self._runtime_snapshot)
+            next_revision = self._runtime_snapshot_revision + 1
+
+        snapshot = self._build_runtime_snapshot(
+            generated_at=datetime.now(UTC),
+            revision=next_revision,
+        )
+        with self._runtime_snapshot_lock:
+            self._runtime_snapshot_revision = next_revision
             self._runtime_snapshot = snapshot
         self._publish_runtime_snapshot_best_effort(snapshot)
         self._publish_recovery_state_best_effort()
+        self._publish_runtime_invalidations(
+            previous_snapshot=previous_snapshot,
+            snapshot=snapshot,
+        )
 
     def _get_runtime_snapshot_refresh_interval_seconds(self) -> float:
         return get_runtime_snapshot_refresh_interval_seconds(
@@ -1261,7 +1276,7 @@ class Orchestrator:
             except TimeoutError:
                 continue
 
-    def _build_runtime_snapshot(self, *, generated_at: datetime) -> dict[str, Any]:
+    def _build_runtime_snapshot(self, *, generated_at: datetime, revision: int) -> dict[str, Any]:
         running_rows = [
             {
                 "issue_id": entry.issue.id,
@@ -1309,6 +1324,7 @@ class Orchestrator:
         )
 
         return {
+            "revision": revision,
             "generated_at": isoformat_utc(generated_at),
             "expires_at": isoformat_utc(
                 generated_at + timedelta(milliseconds=max(self.state.poll_interval_ms * 2, 1_000))
@@ -1331,6 +1347,36 @@ class Orchestrator:
             "rate_limits": copy.deepcopy(self.state.codex_rate_limits),
             "workflow": _workflow_runtime_snapshot(self._workflow_runtime),
         }
+
+    def _publish_runtime_invalidations(
+        self,
+        *,
+        previous_snapshot: dict[str, Any],
+        snapshot: dict[str, Any],
+    ) -> None:
+        revision = snapshot.get("revision")
+        revision_value = revision if isinstance(revision, int) else 0
+        publish_runtime_invalidation(
+            "snapshot_updated",
+            {
+                "revision": revision_value,
+                "generated_at": snapshot.get("generated_at"),
+                "expires_at": snapshot.get("expires_at"),
+            },
+        )
+
+        changed_issue_identifiers = _collect_changed_issue_identifiers(
+            previous_snapshot=previous_snapshot,
+            snapshot=snapshot,
+        )
+        if changed_issue_identifiers:
+            publish_runtime_invalidation(
+                "issue_changed",
+                {
+                    "revision": revision_value,
+                    "issue_identifiers": changed_issue_identifiers,
+                },
+            )
 
     def _get_live_config(self) -> ServiceConfig:
         return self.config
@@ -1605,6 +1651,40 @@ def _workflow_runtime_snapshot(workflow_runtime: WorkflowRuntime | None) -> dict
         "last_checked_at": isoformat_utc(status.last_checked_at),
         "last_error": last_error,
     }
+
+
+def _collect_changed_issue_identifiers(
+    *,
+    previous_snapshot: dict[str, Any],
+    snapshot: dict[str, Any],
+) -> list[str]:
+    previous_rows = _runtime_issue_rows_by_identifier(previous_snapshot)
+    current_rows = _runtime_issue_rows_by_identifier(snapshot)
+
+    changed_identifiers = [
+        identifier
+        for identifier in sorted(set(previous_rows) | set(current_rows))
+        if previous_rows.get(identifier) != current_rows.get(identifier)
+    ]
+    return changed_identifiers
+
+
+def _runtime_issue_rows_by_identifier(
+    snapshot: dict[str, Any],
+) -> dict[str, tuple[str, dict[str, Any]]]:
+    rows_by_identifier: dict[str, tuple[str, dict[str, Any]]] = {}
+    for status_key in ("running", "retrying"):
+        rows = snapshot.get(status_key)
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            issue_identifier = row.get("issue_identifier")
+            if not isinstance(issue_identifier, str) or not issue_identifier:
+                continue
+            rows_by_identifier[issue_identifier] = (status_key, row)
+    return rows_by_identifier
 
 
 def _error_code(exc: Exception) -> str:

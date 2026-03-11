@@ -12,6 +12,9 @@ def isoformat_utc(value: datetime | None) -> str | None:
 
 def refresh_runtime_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
     generated_at = datetime.now(UTC)
+    revision = snapshot.get("revision")
+    if not isinstance(revision, int) or revision < 0:
+        snapshot["revision"] = 0
     base_generated_at = parse_snapshot_timestamp(snapshot.get("generated_at"))
     codex_totals = snapshot.get("codex_totals")
     running_rows = snapshot.get("running")
