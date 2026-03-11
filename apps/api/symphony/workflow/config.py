@@ -333,10 +333,19 @@ def _build_tracker_config(
     if tracker_kind == "plane":
         return PlaneTrackerConfig(
             kind=tracker_kind,
-            api_base_url=_clean_string(tracker_section.get("api_base_url")),
+            api_base_url=_resolve_optional_env_string(
+                tracker_section.get("api_base_url"),
+                env=env,
+            ),
             api_key=tracker_api_key,
-            workspace_slug=_clean_string(tracker_section.get("workspace_slug")),
-            project_id=_coerce_tracker_project_id(tracker_section.get("project_id")),
+            workspace_slug=_resolve_optional_env_string(
+                tracker_section.get("workspace_slug"),
+                env=env,
+            ),
+            project_id=_coerce_tracker_project_id(
+                tracker_section.get("project_id"),
+                env=env,
+            ),
             active_states=active_states,
             terminal_states=terminal_states,
         )
@@ -358,12 +367,12 @@ def _clean_string(value: Any) -> str | None:
     return normalized or None
 
 
-def _coerce_tracker_project_id(value: Any) -> str | None:
+def _coerce_tracker_project_id(value: Any, *, env: Mapping[str, str]) -> str | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
         return str(value)
-    return _clean_string(value)
+    return _resolve_optional_env_string(value, env=env)
 
 
 def _coerce_int(value: Any, *, default: int) -> int:
@@ -442,22 +451,31 @@ def _coerce_workspace_root(value: Any, *, env: Mapping[str, str]) -> Path:
     return Path(os.path.expanduser(raw_value))
 
 
+def _resolve_optional_env_string(value: Any, *, env: Mapping[str, str]) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    if normalized.startswith("$") and len(normalized) > 1:
+        return env.get(normalized[1:], "").strip() or None
+
+    return normalized
+
+
 def _resolve_tracker_api_key(
     tracker_section: Mapping[str, Any],
     tracker_kind: str | None,
     env: Mapping[str, str],
 ) -> str | None:
     raw_value = tracker_section.get("api_key")
-    resolved_value: str | None
     has_explicit_api_key = False
 
     if isinstance(raw_value, str):
         has_explicit_api_key = True
-        candidate = raw_value.strip()
-        if candidate.startswith("$") and len(candidate) > 1:
-            resolved_value = env.get(candidate[1:], "").strip() or None
-        else:
-            resolved_value = candidate or None
+        resolved_value = _resolve_optional_env_string(raw_value, env=env)
     else:
         resolved_value = None
 

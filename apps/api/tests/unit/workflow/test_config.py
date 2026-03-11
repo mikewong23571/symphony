@@ -144,6 +144,58 @@ def test_build_service_config_treats_empty_explicit_env_api_key_as_missing() -> 
     assert config.tracker.api_key is None
 
 
+def test_build_service_config_resolves_plane_tracker_fields_from_explicit_env_tokens() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "$PLANE_API_BASE_URL",
+                    "api_key": "plane-token",
+                    "workspace_slug": "$PLANE_WORKSPACE",
+                    "project_id": "$PLANE_PROJECT_ID",
+                }
+            }
+        ),
+        env={
+            "PLANE_API_BASE_URL": "https://plane.example",
+            "PLANE_WORKSPACE": "workspace",
+            "PLANE_PROJECT_ID": "project-123",
+        },
+    )
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.api_base_url == "https://plane.example"
+    assert config.tracker.workspace_slug == "workspace"
+    assert config.tracker.project_id == "project-123"
+
+
+def test_build_service_config_treats_empty_explicit_env_plane_fields_as_missing() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "$PLANE_API_BASE_URL",
+                    "api_key": "plane-token",
+                    "workspace_slug": "$PLANE_WORKSPACE",
+                    "project_id": "$PLANE_PROJECT_ID",
+                }
+            }
+        ),
+        env={
+            "PLANE_API_BASE_URL": "",
+            "PLANE_WORKSPACE": "   ",
+            "PLANE_PROJECT_ID": "",
+        },
+    )
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.api_base_url is None
+    assert config.tracker.workspace_slug is None
+    assert config.tracker.project_id is None
+
+
 def test_build_service_config_expands_workspace_root_from_env_and_home() -> None:
     config = build_service_config(
         build_definition({"workspace": {"root": "$WORKSPACE_ROOT"}}),
@@ -278,7 +330,7 @@ def test_validate_dispatch_config_surfaces_required_startup_errors(
     config: dict[str, Any],
     error_type: type[Exception],
 ) -> None:
-    service_config = build_service_config(build_definition(config))
+    service_config = build_service_config(build_definition(config), env={})
 
     with pytest.raises(error_type):
         validate_dispatch_config(service_config)
@@ -337,6 +389,58 @@ def test_validate_dispatch_config_surfaces_plane_tracker_field_errors(
     service_config = build_service_config(
         build_definition({"tracker": tracker_config}),
         env={"LINEAR_API_KEY": "ignored-linear-token"},
+    )
+
+    with pytest.raises(error_type, match=message):
+        validate_dispatch_config(service_config)
+
+
+@pytest.mark.parametrize(
+    ("tracker_config", "error_type", "message"),
+    [
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "$PLANE_API_BASE_URL",
+                "workspace_slug": "workspace",
+                "project_id": "project-123",
+                "api_key": "plane-token",
+            },
+            MissingTrackerAPIBaseURLError,
+            "tracker.api_base_url is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "workspace_slug": "$PLANE_WORKSPACE",
+                "project_id": "project-123",
+                "api_key": "plane-token",
+            },
+            MissingTrackerWorkspaceSlugError,
+            "tracker.workspace_slug is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "workspace_slug": "workspace",
+                "project_id": "$PLANE_PROJECT_ID",
+                "api_key": "plane-token",
+            },
+            MissingTrackerProjectIDError,
+            "tracker.project_id is required when tracker.kind is 'plane'.",
+        ),
+    ],
+)
+def test_validate_dispatch_config_surfaces_precise_errors_for_unresolved_plane_env_tokens(
+    tracker_config: dict[str, Any],
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    service_config = build_service_config(
+        build_definition({"tracker": tracker_config}),
+        env={},
     )
 
     with pytest.raises(error_type, match=message):
