@@ -65,10 +65,10 @@ describe("runtime presenters", () => {
     expect(result.activeIssues[0]?.identifier).toBe("SYM-1");
     expect(result.retryQueue[0]?.priorSessionLabel).toBe("thread-9-turn-1");
     expect(result.rateLimits[0]?.value).toBe("7");
-    expect(result.statCards[4]).toEqual(
+    expect(result.statCards).toHaveLength(4);
+    expect(result.snapshotStatus).toEqual(
       expect.objectContaining({
-        label: "Workflow status",
-        value: "Snapshot live"
+        label: "Snapshot live"
       })
     );
   });

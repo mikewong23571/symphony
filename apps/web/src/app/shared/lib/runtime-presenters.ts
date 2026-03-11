@@ -33,7 +33,7 @@ export function presentDashboardSnapshot(
     snapshotStatus,
     generatedAt: formatTimestamp(snapshot.generated_at),
     expiresAt: formatTimestamp(snapshot.expires_at),
-    statCards: buildDashboardStatCards(snapshot, snapshotStatus),
+    statCards: buildDashboardStatCards(snapshot),
     activeIssues: snapshot.running.map(presentRunningRow),
     retryQueue: snapshot.retrying.map(presentRetryRow),
     rateLimits: presentRateLimits(snapshot.rate_limits),
@@ -120,8 +120,7 @@ export function presentRefreshReceipt(
 }
 
 function buildDashboardStatCards(
-  snapshot: RuntimeStateApiResponse,
-  snapshotStatus: ReturnType<typeof describeSnapshotStatus>
+  snapshot: RuntimeStateApiResponse
 ): RuntimeStatCardViewModel[] {
   return [
     {
@@ -149,11 +148,6 @@ function buildDashboardStatCards(
       label: "Runtime",
       value: formatDurationSeconds(snapshot.codex_totals.seconds_running),
       detail: `Snapshot generated ${formatTimestamp(snapshot.generated_at)}`
-    },
-    {
-      label: "Workflow status",
-      value: snapshotStatus.label,
-      detail: snapshotStatus.detail
     }
   ];
 }
