@@ -20,11 +20,11 @@ from .linear_client import (
 )
 from .models import Issue, IssueBlocker
 from .write_contract import (
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
     TrackerInvalidTransitionError,
+    TrackerIssueLink,
     TrackerIssueNotFoundError,
     TrackerIssueReference,
     TrackerMutationError,
@@ -65,11 +65,11 @@ __all__ = [
     "LinearPayloadError",
     "LinearTrackerClient",
     "LinearTransportResponse",
-    "TrackerAttachment",
     "TrackerComment",
     "TrackerCommentRequest",
     "TrackerCommentResult",
     "TrackerInvalidTransitionError",
+    "TrackerIssueLink",
     "TrackerIssueNotFoundError",
     "TrackerIssueReference",
     "TrackerMutationError",

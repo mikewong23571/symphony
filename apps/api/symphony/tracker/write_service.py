@@ -20,11 +20,11 @@ from .linear_client import (
 )
 from .write_contract import (
     JsonScalar,
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
     TrackerInvalidTransitionError,
+    TrackerIssueLink,
     TrackerIssueNotFoundError,
     TrackerIssueReference,
     TrackerPullRequestRequest,
@@ -57,7 +57,7 @@ class TrackerMutationBackend(Protocol):
 
     def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference: ...
 
-    def create_attachment(
+    def create_issue_link(
         self,
         *,
         issue_id: str,
@@ -65,13 +65,13 @@ class TrackerMutationBackend(Protocol):
         url: str,
         subtitle: str | None,
         metadata: Mapping[str, JsonScalar],
-    ) -> TrackerAttachment: ...
+    ) -> TrackerIssueLink: ...
 
 
 @dataclass(slots=True)
 class TrackerMutationService:
     backend: TrackerMutationBackend
-    project_slug: str | None
+    project_ref: str | None
 
     def add_comment(self, request: TrackerCommentRequest) -> TrackerCommentResult:
         issue_identifier = request.issue_identifier.strip()
@@ -172,8 +172,8 @@ class TrackerMutationService:
 
         try:
             issue = self._require_issue_reference(issue_identifier)
-            attachment = self._call_backend(
-                lambda: self.backend.create_attachment(
+            issue_link = self._call_backend(
+                lambda: self.backend.create_issue_link(
                     issue_id=issue.id,
                     title=title,
                     url=url,
@@ -185,11 +185,7 @@ class TrackerMutationService:
                 issue_id=issue.id,
                 issue_identifier=issue.identifier,
                 status="applied",
-                attachment_id=attachment.id,
-                title=attachment.title,
-                url=attachment.url,
-                subtitle=attachment.subtitle,
-                metadata=attachment.metadata,
+                issue_link=issue_link,
             )
         except Exception as exc:
             self._log_pull_request(
@@ -203,9 +199,9 @@ class TrackerMutationService:
         self._log_pull_request(
             issue_id=result.issue_id,
             issue_identifier=result.issue_identifier,
-            url=result.url,
+            url=result.issue_link.url,
             status=result.status,
-            attachment_id=result.attachment_id,
+            issue_link_id=result.issue_link.id,
         )
         return result
 
@@ -215,7 +211,7 @@ class TrackerMutationService:
             raise TrackerIssueNotFoundError(
                 f"Issue {issue_identifier!r} was not found in the configured tracker project."
             )
-        if self.project_slug and issue.project_slug != self.project_slug:
+        if self.project_ref and issue.project_ref != self.project_ref:
             raise TrackerIssueNotFoundError(
                 f"Issue {issue_identifier!r} was not found in the configured tracker project."
             )
@@ -229,7 +225,7 @@ class TrackerMutationService:
     ) -> str:
         workflow_states = self._call_backend(self.backend.list_workflow_states)
         for state in workflow_states:
-            if state.team_id == issue.team_id and state.name == target_state:
+            if state.workflow_scope_id == issue.workflow_scope_id and state.name == target_state:
                 return state.id
         raise TrackerInvalidTransitionError(
             f"State {target_state!r} is not a valid workflow state for {issue.identifier!r}."
@@ -339,7 +335,7 @@ class TrackerMutationService:
         url: str,
         status: str,
         issue_id: str | None = None,
-        attachment_id: str | None = None,
+        issue_link_id: str | None = None,
         exc: Exception | None = None,
     ) -> None:
         fields = {
@@ -347,7 +343,7 @@ class TrackerMutationService:
             "issue_identifier": issue_identifier,
             "url": url,
             "status": status,
-            "attachment_id": attachment_id,
+            "issue_link_id": issue_link_id,
         }
         if exc is not None:
             fields["error_code"] = getattr(exc, "code", exc.__class__.__name__)
@@ -368,7 +364,7 @@ class TrackerMutationService:
 def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationService:
     return TrackerMutationService(
         backend=LinearTrackerClient(config.tracker),
-        project_slug=config.tracker.project_slug,
+        project_ref=config.tracker.project_slug,
     )
 
 

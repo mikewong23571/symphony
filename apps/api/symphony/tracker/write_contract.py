@@ -56,15 +56,15 @@ class TrackerIssueReference:
     identifier: str
     state_id: str
     state_name: str
-    team_id: str
-    project_slug: str | None
+    workflow_scope_id: str
+    project_ref: str | None
 
 
 @dataclass(slots=True, frozen=True)
 class TrackerWorkflowState:
     id: str
     name: str
-    team_id: str
+    workflow_scope_id: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -75,7 +75,7 @@ class TrackerComment:
 
 
 @dataclass(slots=True, frozen=True)
-class TrackerAttachment:
+class TrackerIssueLink:
     id: str
     title: str
     url: str
@@ -131,8 +131,4 @@ class TrackerPullRequestResult:
     issue_id: str
     issue_identifier: str
     status: str
-    attachment_id: str
-    title: str
-    url: str
-    subtitle: str | None
-    metadata: dict[str, JsonScalar]
+    issue_link: TrackerIssueLink

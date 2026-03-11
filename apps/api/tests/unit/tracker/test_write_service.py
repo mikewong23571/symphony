@@ -6,11 +6,11 @@ from collections.abc import Mapping
 
 import pytest
 from symphony.tracker.write_contract import (
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerGraphQLError,
     TrackerInvalidTransitionError,
+    TrackerIssueLink,
     TrackerIssueNotFoundError,
     TrackerIssueReference,
     TrackerPullRequestRequest,
@@ -29,15 +29,19 @@ class FakeMutationBackend:
             identifier="SYM-123",
             state_id="state-todo",
             state_name="Todo",
-            team_id="team-1",
-            project_slug="symphony",
+            workflow_scope_id="team-1",
+            project_ref="symphony",
         )
         self.workflow_states = [
-            TrackerWorkflowState(id="state-todo", name="Todo", team_id="team-1"),
-            TrackerWorkflowState(id="state-progress", name="In Progress", team_id="team-1"),
+            TrackerWorkflowState(id="state-todo", name="Todo", workflow_scope_id="team-1"),
+            TrackerWorkflowState(
+                id="state-progress",
+                name="In Progress",
+                workflow_scope_id="team-1",
+            ),
         ]
         self.comments: list[tuple[str, str]] = []
-        self.attachments: list[dict[str, object]] = []
+        self.issue_links: list[dict[str, object]] = []
         self.state_updates: list[tuple[str, str]] = []
         self.fail_with: Exception | None = None
 
@@ -65,12 +69,12 @@ class FakeMutationBackend:
             identifier=self.issue.identifier,
             state_id=matching_state.id,
             state_name=matching_state.name,
-            team_id=self.issue.team_id,
-            project_slug=self.issue.project_slug,
+            workflow_scope_id=self.issue.workflow_scope_id,
+            project_ref=self.issue.project_ref,
         )
         return self.issue
 
-    def create_attachment(
+    def create_issue_link(
         self,
         *,
         issue_id: str,
@@ -78,13 +82,13 @@ class FakeMutationBackend:
         url: str,
         subtitle: str | None,
         metadata: Mapping[str, str | int | float | bool],
-    ) -> TrackerAttachment:
+    ) -> TrackerIssueLink:
         if self.fail_with is not None:
             raise self.fail_with
-        attachment_id = "attachment-1"
-        for existing in self.attachments:
+        issue_link_id = "attachment-1"
+        for existing in self.issue_links:
             if existing["url"] == url:
-                attachment_id = str(existing["id"])
+                issue_link_id = str(existing["id"])
                 existing.update(
                     {
                         "title": title,
@@ -94,9 +98,9 @@ class FakeMutationBackend:
                 )
                 break
         else:
-            self.attachments.append(
+            self.issue_links.append(
                 {
-                    "id": attachment_id,
+                    "id": issue_link_id,
                     "issue_id": issue_id,
                     "title": title,
                     "url": url,
@@ -104,8 +108,8 @@ class FakeMutationBackend:
                     "metadata": dict(metadata),
                 }
             )
-        return TrackerAttachment(
-            id=attachment_id,
+        return TrackerIssueLink(
+            id=issue_link_id,
             title=title,
             url=url,
             subtitle=subtitle,
@@ -114,7 +118,7 @@ class FakeMutationBackend:
 
 
 def test_add_comment_logs_applied_mutation(caplog: pytest.LogCaptureFixture) -> None:
-    service = TrackerMutationService(backend=FakeMutationBackend(), project_slug="symphony")
+    service = TrackerMutationService(backend=FakeMutationBackend(), project_ref="symphony")
 
     with caplog.at_level(logging.INFO):
         result = service.add_comment(
@@ -131,7 +135,7 @@ def test_add_comment_logs_applied_mutation(caplog: pytest.LogCaptureFixture) -> 
 def test_transition_issue_returns_noop_for_redundant_target_state(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    service = TrackerMutationService(backend=FakeMutationBackend(), project_slug="symphony")
+    service = TrackerMutationService(backend=FakeMutationBackend(), project_ref="symphony")
 
     with caplog.at_level(logging.INFO):
         result = service.transition_issue(
@@ -147,7 +151,7 @@ def test_transition_issue_returns_noop_for_redundant_target_state(
 
 def test_transition_issue_mutates_by_internal_issue_id() -> None:
     backend = FakeMutationBackend()
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     result = service.transition_issue(
         TrackerTransitionRequest(issue_identifier="SYM-123", target_state="In Progress")
@@ -158,7 +162,7 @@ def test_transition_issue_mutates_by_internal_issue_id() -> None:
 
 
 def test_transition_issue_rejects_unknown_target_state() -> None:
-    service = TrackerMutationService(backend=FakeMutationBackend(), project_slug="symphony")
+    service = TrackerMutationService(backend=FakeMutationBackend(), project_ref="symphony")
 
     with pytest.raises(TrackerInvalidTransitionError, match="not a valid workflow state"):
         service.transition_issue(
@@ -168,7 +172,7 @@ def test_transition_issue_rejects_unknown_target_state() -> None:
 
 def test_attach_pull_request_normalizes_metadata_and_supports_repeated_urls() -> None:
     backend = FakeMutationBackend()
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     first = service.attach_pull_request(
         TrackerPullRequestRequest(
@@ -195,10 +199,10 @@ def test_attach_pull_request_normalizes_metadata_and_supports_repeated_urls() ->
         )
     )
 
-    assert first.attachment_id == "attachment-1"
-    assert second.attachment_id == "attachment-1"
-    assert len(backend.attachments) == 1
-    assert second.metadata == {
+    assert first.issue_link.id == "attachment-1"
+    assert second.issue_link.id == "attachment-1"
+    assert len(backend.issue_links) == 1
+    assert second.issue_link.metadata == {
         "commit_count": 3,
         "branch_name": "feature/sym-123",
         "repository": "acme/symphony",
@@ -208,7 +212,7 @@ def test_attach_pull_request_normalizes_metadata_and_supports_repeated_urls() ->
 
 def test_attach_pull_request_rejects_digit_prefixed_metadata_keys_before_backend_call() -> None:
     backend = FakeMutationBackend()
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     with pytest.raises(TrackerValidationError, match="must start with a letter or underscore"):
         service.attach_pull_request(
@@ -224,12 +228,12 @@ def test_attach_pull_request_rejects_digit_prefixed_metadata_keys_before_backend
             )
         )
 
-    assert backend.attachments == []
+    assert backend.issue_links == []
 
 
-def test_attach_pull_request_accepts_graphql_compatible_metadata_keys() -> None:
+def test_attach_pull_request_accepts_valid_metadata_keys() -> None:
     backend = FakeMutationBackend()
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     result = service.attach_pull_request(
         TrackerPullRequestRequest(
@@ -244,12 +248,12 @@ def test_attach_pull_request_accepts_graphql_compatible_metadata_keys() -> None:
         )
     )
 
-    assert result.metadata == {"_branch1": "feature/sym-123"}
+    assert result.issue_link.metadata == {"_branch1": "feature/sym-123"}
 
 
 def test_attach_pull_request_rejects_non_finite_metadata_numbers_before_backend_call() -> None:
     backend = FakeMutationBackend()
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     with pytest.raises(TrackerValidationError, match="must be a string, finite number"):
         service.attach_pull_request(
@@ -265,7 +269,7 @@ def test_attach_pull_request_rejects_non_finite_metadata_numbers_before_backend_
             )
         )
 
-    assert backend.attachments == []
+    assert backend.issue_links == []
 
 
 def test_service_normalizes_backend_request_failures(
@@ -273,7 +277,7 @@ def test_service_normalizes_backend_request_failures(
 ) -> None:
     backend = FakeMutationBackend()
     backend.fail_with = TrackerGraphQLError("Linear GraphQL response returned top-level errors.")
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     with caplog.at_level(logging.WARNING):
         with pytest.raises(TrackerGraphQLError):
@@ -285,7 +289,7 @@ def test_service_normalizes_backend_request_failures(
 
 
 def test_service_rejects_missing_issue() -> None:
-    service = TrackerMutationService(backend=FakeMutationBackend(), project_slug="symphony")
+    service = TrackerMutationService(backend=FakeMutationBackend(), project_ref="symphony")
 
     with pytest.raises(TrackerIssueNotFoundError, match="configured tracker project"):
         service.add_comment(TrackerCommentRequest(issue_identifier="SYM-999", body="Ship it"))
@@ -294,7 +298,7 @@ def test_service_rejects_missing_issue() -> None:
 def test_service_normalizes_linear_request_failure() -> None:
     backend = FakeMutationBackend()
     backend.fail_with = TrackerRequestFailedError("Linear API request failed.")
-    service = TrackerMutationService(backend=backend, project_slug="symphony")
+    service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     with pytest.raises(TrackerRequestFailedError):
         service.attach_pull_request(

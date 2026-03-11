@@ -307,11 +307,11 @@ def tracker_pull_request(request: HttpRequest, issue_identifier: str) -> JsonRes
             "status": result.status,
             "issue": {"id": result.issue_id, "identifier": result.issue_identifier},
             "pull_request": {
-                "attachment_id": result.attachment_id,
-                "title": result.title,
-                "url": result.url,
-                "subtitle": result.subtitle,
-                "metadata": result.metadata,
+                "attachment_id": result.issue_link.id,
+                "title": result.issue_link.title,
+                "url": result.issue_link.url,
+                "subtitle": result.issue_link.subtitle,
+                "metadata": result.issue_link.metadata,
             },
         }
     )
