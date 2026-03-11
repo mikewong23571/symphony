@@ -269,6 +269,7 @@ function presentRunningRow(
     session: row.session_id ?? "Session pending",
     lastEvent: row.last_event ?? "No event yet",
     lastMessage: row.last_message ?? "No message yet",
+    lastMessageRaw: row.last_message ?? "",
     startedAt: formatTimestamp(row.started_at),
     updatedAt: formatTimestamp(row.last_event_at),
     workspacePath: row.workspace_path ?? "Unavailable",

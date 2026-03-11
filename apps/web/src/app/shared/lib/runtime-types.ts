@@ -172,6 +172,7 @@ export interface RuntimeActivityRowViewModel {
   session: string;
   lastEvent: string;
   lastMessage: string;
+  lastMessageRaw: string;
   startedAt: string;
   updatedAt: string;
   workspacePath: string;

@@ -139,15 +139,14 @@ type RefreshState =
                 } @else {
                   <div class="issue-list">
                     @for (issue of data.activeIssues; track issue.identifier) {
-                      <mat-card
-                        appearance="outlined"
-                        matRipple
-                        class="card-link issue-card"
-                        [routerLink]="['/issues', issue.identifier]"
-                      >
+                      <mat-card appearance="outlined" class="issue-card">
                         <mat-card-content>
                           <div class="issue-header">
-                            <span class="issue-id">{{ issue.identifier }}</span>
+                            <a
+                              class="issue-id card-link"
+                              [routerLink]="['/issues', issue.identifier]"
+                              >{{ issue.identifier }}</a
+                            >
                             <mat-chip-set>
                               <mat-chip
                                 [class]="stateBadgeClass(issue.state)"
@@ -162,23 +161,50 @@ type RefreshState =
                                 {{ issue.attemptLabel }}
                               </mat-chip>
                             </mat-chip-set>
+                            <button
+                              class="expand-btn"
+                              (click)="toggleIssue(issue.identifier)"
+                              [attr.aria-expanded]="
+                                isIssueExpanded(issue.identifier)
+                              "
+                              [attr.aria-label]="
+                                isIssueExpanded(issue.identifier)
+                                  ? 'Collapse'
+                                  : 'Expand'
+                              "
+                            >
+                              <mat-icon>{{
+                                isIssueExpanded(issue.identifier)
+                                  ? "expand_less"
+                                  : "expand_more"
+                              }}</mat-icon>
+                            </button>
                           </div>
-                          <p class="issue-summary tone-muted">
-                            {{ issue.lastEvent }} · {{ issue.lastMessage }}
+                          <p class="issue-event tone-muted">
+                            {{ issue.lastEvent }}
                           </p>
-                          <div class="issue-meta">
-                            <p><strong>Session</strong> {{ issue.session }}</p>
-                            <p>
-                              <strong>Started</strong> {{ issue.startedAt }}
-                            </p>
-                            <p>
-                              <strong>Tokens</strong> {{ issue.tokenSummary }}
-                            </p>
-                            <p>
-                              <strong>Workspace</strong>
-                              {{ issue.workspacePath }}
-                            </p>
-                          </div>
+                          @if (isIssueExpanded(issue.identifier)) {
+                            <div class="issue-meta">
+                              <p>
+                                <strong>Session</strong> {{ issue.session }}
+                              </p>
+                              <p>
+                                <strong>Started</strong> {{ issue.startedAt }}
+                              </p>
+                              <p>
+                                <strong>Tokens</strong> {{ issue.tokenSummary }}
+                              </p>
+                              <p>
+                                <strong>Workspace</strong>
+                                {{ issue.workspacePath }}
+                              </p>
+                            </div>
+                            @if (issue.lastMessageRaw) {
+                              <pre class="issue-message-raw">{{
+                                tryFormatJson(issue.lastMessageRaw)
+                              }}</pre>
+                            }
+                          }
                         </mat-card-content>
                       </mat-card>
                     }
@@ -345,10 +371,40 @@ type RefreshState =
       .issue-id {
         font-size: 1rem;
         font-weight: 600;
+        text-decoration: none;
+        color: inherit;
       }
-      .issue-summary {
+      .issue-id:hover {
+        text-decoration: underline;
+      }
+      .expand-btn {
+        margin-left: auto;
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        color: #6e6558;
+      }
+      .expand-btn:hover {
+        color: #1f1b16;
+      }
+      .issue-event {
         font-size: 0.875rem;
-        margin: 0.5rem 0 0;
+        margin: 0.375rem 0 0;
+      }
+      .issue-message-raw {
+        margin: 0.75rem 0 0;
+        padding: 0.75rem 1rem;
+        font-size: 0.75rem;
+        line-height: 1.5;
+        overflow-x: auto;
+        border: 1px solid #d7d0c3;
+        border-radius: 4px;
+        background: #faf7f2;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
       .issue-meta {
         display: grid;
@@ -425,6 +481,7 @@ export class DashboardPageComponent {
   private readonly destroyRef = inject(DestroyRef);
 
   readonly state = signal<DashboardState>({ kind: "loading" });
+  readonly expandedIssues = signal(new Set<string>());
   readonly refreshState = signal<RefreshState>({ kind: "idle" });
   readonly dashboardData = computed(() => {
     const state = this.state();
@@ -472,6 +529,27 @@ export class DashboardPageComponent {
         error: (error: RuntimeUiError) =>
           this.refreshState.set({ kind: "error", error })
       });
+  }
+
+  toggleIssue(identifier: string): void {
+    this.expandedIssues.update((set) => {
+      const next = new Set(set);
+      if (next.has(identifier)) next.delete(identifier);
+      else next.add(identifier);
+      return next;
+    });
+  }
+
+  isIssueExpanded(identifier: string): boolean {
+    return this.expandedIssues().has(identifier);
+  }
+
+  tryFormatJson(raw: string): string {
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      return raw;
+    }
   }
 
   statToneClass(card: RuntimeStatCardViewModel): string {
