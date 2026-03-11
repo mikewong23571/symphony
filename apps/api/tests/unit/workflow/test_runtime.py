@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import pytest
-from symphony.workflow import WorkflowRuntime
+from symphony.workflow import UnsupportedTrackerKindError, WorkflowRuntime
 
 
 def write_workflow(
@@ -24,6 +24,24 @@ def write_workflow(
             "  project_slug: symphony\n"
             "polling:\n"
             f"  interval_ms: {poll_interval_ms}\n"
+            "---\n"
+            f"{prompt_template}\n"
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_plane_workflow(path: Path, *, prompt_template: str = "Prompt body") -> Path:
+    path.write_text(
+        (
+            "---\n"
+            "tracker:\n"
+            "  kind: plane\n"
+            "  api_base_url: https://plane.example\n"
+            "  api_key: plane-token\n"
+            "  workspace_slug: workspace\n"
+            "  project_id: project-123\n"
             "---\n"
             f"{prompt_template}\n"
         ),
@@ -145,6 +163,19 @@ def test_workflow_runtime_requires_explicit_initial_load(tmp_path: Path) -> None
 
     with pytest.raises(RuntimeError, match="has not loaded a service config yet"):
         runtime.reload_if_changed()
+
+
+def test_workflow_runtime_rejects_fully_populated_plane_configs_until_supported(
+    tmp_path: Path,
+) -> None:
+    workflow_path = write_plane_workflow(tmp_path / "WORKFLOW.md")
+    runtime = WorkflowRuntime(workflow_path)
+
+    with pytest.raises(
+        UnsupportedTrackerKindError,
+        match="tracker.kind must be set to the supported tracker kind 'linear'.",
+    ):
+        runtime.load_initial()
 
 
 def test_workflow_runtime_watches_for_file_changes(tmp_path: Path) -> None:

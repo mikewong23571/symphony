@@ -43,6 +43,18 @@ class MissingTrackerAPIKeyError(WorkflowConfigError):
     code = "missing_tracker_api_key"
 
 
+class MissingTrackerAPIBaseURLError(WorkflowConfigError):
+    code = "missing_tracker_api_base_url"
+
+
+class MissingTrackerWorkspaceSlugError(WorkflowConfigError):
+    code = "missing_tracker_workspace_slug"
+
+
+class MissingTrackerProjectIDError(WorkflowConfigError):
+    code = "missing_tracker_project_id"
+
+
 class MissingTrackerProjectSlugError(WorkflowConfigError):
     code = "missing_tracker_project_slug"
 
@@ -56,13 +68,27 @@ class InvalidServerPortError(WorkflowConfigError):
 
 
 @dataclass(slots=True, frozen=True)
-class TrackerConfig:
+class LinearTrackerConfig:
     kind: str | None
     endpoint: str
     api_key: str | None
     project_slug: str | None
     active_states: tuple[str, ...]
     terminal_states: tuple[str, ...]
+
+
+@dataclass(slots=True, frozen=True)
+class PlaneTrackerConfig:
+    kind: str
+    api_base_url: str | None
+    api_key: str | None
+    workspace_slug: str | None
+    project_id: str | None
+    active_states: tuple[str, ...]
+    terminal_states: tuple[str, ...]
+
+
+TrackerConfig = LinearTrackerConfig | PlaneTrackerConfig
 
 
 @dataclass(slots=True, frozen=True)
@@ -119,7 +145,7 @@ class CodexConfig:
 @dataclass(slots=True, frozen=True)
 class ServiceConfig:
     prompt_template: str
-    tracker: TrackerConfig
+    tracker: LinearTrackerConfig | PlaneTrackerConfig
     polling: PollingConfig
     workspace: WorkspaceConfig
     observability: ObservabilityConfig
@@ -145,26 +171,9 @@ def build_service_config(
     agent_section = _get_section(definition.config, "agent")
     codex_section = _get_section(definition.config, "codex")
 
-    tracker_kind = _clean_string(tracker_section.get("kind"))
-    tracker_kind = tracker_kind.lower() if tracker_kind is not None else None
-    tracker_api_key = _resolve_tracker_api_key(tracker_section, tracker_kind, environment)
-
     return ServiceConfig(
         prompt_template=definition.prompt_template,
-        tracker=TrackerConfig(
-            kind=tracker_kind,
-            endpoint=_clean_string(tracker_section.get("endpoint")) or DEFAULT_LINEAR_ENDPOINT,
-            api_key=tracker_api_key,
-            project_slug=_clean_string(tracker_section.get("project_slug")),
-            active_states=_coerce_states(
-                tracker_section.get("active_states"),
-                DEFAULT_ACTIVE_STATES,
-            ),
-            terminal_states=_coerce_states(
-                tracker_section.get("terminal_states"),
-                DEFAULT_TERMINAL_STATES,
-            ),
-        ),
+        tracker=_build_tracker_config(tracker_section, env=environment),
         polling=PollingConfig(
             interval_ms=_coerce_int(
                 polling_section.get("interval_ms"),
@@ -247,17 +256,44 @@ def build_service_config(
 
 
 def validate_dispatch_config(config: ServiceConfig) -> None:
-    if config.tracker.kind != "linear":
+    tracker = config.tracker
+
+    if isinstance(tracker, PlaneTrackerConfig):
+        if not tracker.api_key:
+            raise MissingTrackerAPIKeyError(
+                "tracker.api_key is required when tracker.kind is 'plane'."
+            )
+
+        if not tracker.api_base_url:
+            raise MissingTrackerAPIBaseURLError(
+                "tracker.api_base_url is required when tracker.kind is 'plane'."
+            )
+
+        if not tracker.workspace_slug:
+            raise MissingTrackerWorkspaceSlugError(
+                "tracker.workspace_slug is required when tracker.kind is 'plane'."
+            )
+
+        if not tracker.project_id:
+            raise MissingTrackerProjectIDError(
+                "tracker.project_id is required when tracker.kind is 'plane'."
+            )
+
         raise UnsupportedTrackerKindError(
             "tracker.kind must be set to the supported tracker kind 'linear'."
         )
 
-    if not config.tracker.api_key:
+    if tracker.kind != "linear":
+        raise UnsupportedTrackerKindError(
+            "tracker.kind must be set to the supported tracker kind 'linear'."
+        )
+
+    if not tracker.api_key:
         raise MissingTrackerAPIKeyError(
             "tracker.api_key must be configured or resolve from LINEAR_API_KEY."
         )
 
-    if not config.tracker.project_slug:
+    if not tracker.project_slug:
         raise MissingTrackerProjectSlugError(
             "tracker.project_slug is required when tracker.kind is 'linear'."
         )
@@ -273,11 +309,57 @@ def _get_section(config: dict[str, Any], key: str) -> Mapping[str, Any]:
     return {}
 
 
+def _build_tracker_config(
+    tracker_section: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+) -> TrackerConfig:
+    tracker_kind = _clean_string(tracker_section.get("kind"))
+    tracker_kind = tracker_kind.lower() if tracker_kind is not None else None
+    tracker_api_key = _resolve_tracker_api_key(tracker_section, tracker_kind, env)
+    active_states = _coerce_states(
+        tracker_section.get("active_states"),
+        DEFAULT_ACTIVE_STATES,
+    )
+    terminal_states = _coerce_states(
+        tracker_section.get("terminal_states"),
+        DEFAULT_TERMINAL_STATES,
+    )
+
+    if tracker_kind == "plane":
+        return PlaneTrackerConfig(
+            kind=tracker_kind,
+            api_base_url=_clean_string(tracker_section.get("api_base_url")),
+            api_key=tracker_api_key,
+            workspace_slug=_clean_string(tracker_section.get("workspace_slug")),
+            project_id=_coerce_tracker_project_id(tracker_section.get("project_id")),
+            active_states=active_states,
+            terminal_states=terminal_states,
+        )
+
+    return LinearTrackerConfig(
+        kind=tracker_kind,
+        endpoint=_clean_string(tracker_section.get("endpoint")) or DEFAULT_LINEAR_ENDPOINT,
+        api_key=tracker_api_key,
+        project_slug=_clean_string(tracker_section.get("project_slug")),
+        active_states=active_states,
+        terminal_states=terminal_states,
+    )
+
+
 def _clean_string(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _coerce_tracker_project_id(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    return _clean_string(value)
 
 
 def _coerce_int(value: Any, *, default: int) -> int:

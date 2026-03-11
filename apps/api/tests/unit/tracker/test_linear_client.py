@@ -24,7 +24,7 @@ from symphony.tracker import (
     LinearTrackerClient,
     LinearTransportResponse,
 )
-from symphony.workflow.config import TrackerConfig
+from symphony.workflow.config import LinearTrackerConfig
 
 
 class RecordingTransport:
@@ -68,8 +68,8 @@ class RecordingTransport:
         return self.response
 
 
-def make_tracker_config() -> TrackerConfig:
-    return TrackerConfig(
+def make_tracker_config() -> LinearTrackerConfig:
+    return LinearTrackerConfig(
         kind="linear",
         endpoint="https://api.linear.app/graphql",
         api_key="linear-token",

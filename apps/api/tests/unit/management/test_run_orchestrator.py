@@ -21,6 +21,29 @@ tracker:
 """
 
 
+VALID_PLANE_WORKFLOW = """---
+tracker:
+  kind: plane
+  api_base_url: https://plane.example
+  api_key: plane-token
+  workspace_slug: workspace
+  project_id: project-123
+---
+# Prompt body
+"""
+
+
+PLANE_WORKFLOW_MISSING_WORKSPACE_SLUG = """---
+tracker:
+  kind: plane
+  api_base_url: https://plane.example
+  api_key: plane-token
+  project_id: project-123
+---
+# Prompt body
+"""
+
+
 WORKFLOW_WITH_HTTP_PORT = """---
 tracker:
   kind: linear
@@ -562,6 +585,36 @@ tracker:
 ---
 # Prompt body
 """,
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CommandError, match=r"Startup failed \(unsupported_tracker_kind\):"):
+        call_command("run_orchestrator")
+
+
+def test_run_orchestrator_surfaces_precise_plane_config_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(
+        tmp_path / "WORKFLOW.md",
+        contents=PLANE_WORKFLOW_MISSING_WORKSPACE_SLUG,
+    )
+
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(CommandError, match=r"Startup failed \(missing_tracker_workspace_slug\):"):
+        call_command("run_orchestrator")
+
+
+def test_run_orchestrator_rejects_valid_plane_config_until_supported(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    write_workflow(
+        tmp_path / "WORKFLOW.md",
+        contents=VALID_PLANE_WORKFLOW,
     )
 
     monkeypatch.chdir(tmp_path)

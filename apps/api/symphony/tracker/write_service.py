@@ -8,7 +8,7 @@ from typing import TypeVar
 from urllib.parse import urlparse
 
 from symphony.observability.logging import log_event
-from symphony.workflow import ServiceConfig
+from symphony.workflow import LinearTrackerConfig, ServiceConfig
 
 from .factory import build_tracker_mutation_backend
 from .interfaces import TrackerMutationBackend
@@ -344,9 +344,13 @@ class TrackerMutationService:
 
 
 def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationService:
+    tracker = config.tracker
+    if not isinstance(tracker, LinearTrackerConfig):
+        raise ValueError(f"Unsupported tracker kind for mutation service: {tracker.kind!r}.")
+
     return TrackerMutationService(
         backend=build_tracker_mutation_backend(config),
-        project_slug=config.tracker.project_slug,
+        project_slug=tracker.project_slug,
     )
 
 

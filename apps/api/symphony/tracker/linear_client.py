@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from symphony.workflow.config import TrackerConfig
+from symphony.workflow.config import LinearTrackerConfig
 
 from .linear import LinearPayloadError, normalize_linear_issue
 from .models import Issue
@@ -301,7 +301,7 @@ class LinearTransport(Protocol):
 
 @dataclass(slots=True)
 class LinearTrackerClient:
-    tracker_config: TrackerConfig
+    tracker_config: LinearTrackerConfig
     timeout_ms: int = DEFAULT_LINEAR_TIMEOUT_MS
     transport: LinearTransport | None = None
 

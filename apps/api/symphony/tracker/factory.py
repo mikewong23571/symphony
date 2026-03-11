@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from symphony.workflow import ServiceConfig
+from symphony.workflow import LinearTrackerConfig, ServiceConfig
 
 from .interfaces import TrackerMutationBackend, TrackerReadClient
 from .linear_client import LinearTrackerClient
@@ -15,6 +15,7 @@ def build_tracker_mutation_backend(config: ServiceConfig) -> TrackerMutationBack
 
 
 def _build_tracker_client(config: ServiceConfig) -> LinearTrackerClient:
-    if config.tracker.kind == "linear":
-        return LinearTrackerClient(config.tracker)
-    raise ValueError(f"Unsupported tracker kind for adapter factory: {config.tracker.kind!r}.")
+    tracker = config.tracker
+    if isinstance(tracker, LinearTrackerConfig) and tracker.kind == "linear":
+        return LinearTrackerClient(tracker)
+    raise ValueError(f"Unsupported tracker kind for adapter factory: {tracker.kind!r}.")
