@@ -6,6 +6,7 @@
 - `uv`
 - Node.js 20 or newer
 - `pnpm` 10.6.0
+- `overmind` (`brew install overmind`)
 
 ## Initial Setup
 
@@ -43,7 +44,7 @@ Start Django, the orchestrator runtime, and Angular together:
 make dev
 ```
 
-This uses `hivemind` with [`Procfile.dev`](../Procfile.dev) and
+This uses `overmind` with [`Procfile.dev`](../Procfile.dev) and
 [`./scripts/dev/start.sh`](../scripts/dev/start.sh). Three processes start
 together:
 

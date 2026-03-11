@@ -30,9 +30,9 @@ load_env_file() {
   done
 }
 
-if ! command -v hivemind >/dev/null 2>&1; then
-  echo "hivemind is required to run the unified dev server." >&2
-  echo "Install it first: https://github.com/DarthSim/hivemind" >&2
+if ! command -v overmind >/dev/null 2>&1; then
+  echo "overmind is required to run the unified dev server." >&2
+  echo "Install it first: brew install overmind" >&2
   exit 127
 fi
 
@@ -92,4 +92,4 @@ export SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH
 export SYMPHONY_RUNTIME_RECOVERY_PATH
 
 cd "${REPO_ROOT}"
-exec hivemind Procfile.dev
+exec overmind start -f Procfile.dev
