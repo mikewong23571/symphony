@@ -1,3 +1,5 @@
+from .factory import build_tracker_mutation_backend, build_tracker_read_client
+from .interfaces import TrackerMutationBackend, TrackerReadClient
 from .linear import LinearPayloadError, normalize_linear_issue
 from .linear_client import (
     CREATE_ATTACHMENT_MUTATION,
@@ -65,6 +67,7 @@ __all__ = [
     "LinearPayloadError",
     "LinearTrackerClient",
     "LinearTransportResponse",
+    "TrackerMutationBackend",
     "TrackerAttachment",
     "TrackerComment",
     "TrackerCommentRequest",
@@ -75,6 +78,7 @@ __all__ = [
     "TrackerMutationError",
     "TrackerMutationGraphQLError",
     "TrackerMutationPayloadError",
+    "TrackerReadClient",
     "TrackerMutationService",
     "TrackerPullRequestRequest",
     "TrackerPullRequestResult",
@@ -85,6 +89,8 @@ __all__ = [
     "TrackerValidationError",
     "TrackerWorkflowState",
     "UPDATE_ISSUE_STATE_MUTATION",
+    "build_tracker_mutation_backend",
+    "build_tracker_read_client",
     "build_tracker_mutation_service",
     "normalize_linear_issue",
 ]

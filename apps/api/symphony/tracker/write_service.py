@@ -2,26 +2,25 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeVar
+from typing import TypeVar
 from urllib.parse import urlparse
 
 from symphony.observability.logging import log_event
 from symphony.workflow import ServiceConfig
 
+from .factory import build_tracker_mutation_backend
+from .interfaces import TrackerMutationBackend
 from .linear import LinearPayloadError
 from .linear_client import (
     LinearAPIError,
     LinearAPIRequestError,
     LinearAPIStatusError,
     LinearGraphQLError,
-    LinearTrackerClient,
 )
 from .write_contract import (
     JsonScalar,
-    TrackerAttachment,
-    TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
     TrackerInvalidTransitionError,
@@ -34,7 +33,6 @@ from .write_contract import (
     TrackerTransitionRequest,
     TrackerTransitionResult,
     TrackerValidationError,
-    TrackerWorkflowState,
     is_valid_json_scalar,
 )
 from .write_contract import (
@@ -46,26 +44,6 @@ from .write_contract import (
 
 logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
-
-
-class TrackerMutationBackend(Protocol):
-    def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None: ...
-
-    def list_workflow_states(self) -> list[TrackerWorkflowState]: ...
-
-    def create_comment(self, issue_id: str, body: str) -> TrackerComment: ...
-
-    def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference: ...
-
-    def create_attachment(
-        self,
-        *,
-        issue_id: str,
-        title: str,
-        url: str,
-        subtitle: str | None,
-        metadata: Mapping[str, JsonScalar],
-    ) -> TrackerAttachment: ...
 
 
 @dataclass(slots=True)
@@ -367,7 +345,7 @@ class TrackerMutationService:
 
 def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationService:
     return TrackerMutationService(
-        backend=LinearTrackerClient(config.tracker),
+        backend=build_tracker_mutation_backend(config),
         project_slug=config.tracker.project_slug,
     )
 

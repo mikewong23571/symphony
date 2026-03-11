@@ -19,7 +19,12 @@ from symphony.tracker.write_contract import (
     TrackerValidationError,
     TrackerWorkflowState,
 )
-from symphony.tracker.write_service import TrackerMutationService
+from symphony.tracker.write_service import (
+    TrackerMutationService,
+    build_tracker_mutation_service,
+)
+from symphony.workflow.config import build_service_config
+from symphony.workflow.loader import WorkflowDefinition
 
 
 class FakeMutationBackend:
@@ -126,6 +131,36 @@ def test_add_comment_logs_applied_mutation(caplog: pytest.LogCaptureFixture) -> 
     assert "event=tracker_comment_mutation" in caplog.text
     assert "status=applied" in caplog.text
     assert "comment_id=comment-1" in caplog.text
+
+
+def test_build_tracker_mutation_service_uses_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = FakeMutationBackend()
+    config = build_service_config(
+        WorkflowDefinition(
+            config={
+                "tracker": {
+                    "kind": "linear",
+                    "api_key": "linear-token",
+                    "project_slug": "symphony",
+                },
+                "codex": {"command": "codex app-server"},
+            },
+            prompt_template="Prompt body",
+        ),
+        env={},
+    )
+
+    monkeypatch.setattr(
+        "symphony.tracker.write_service.build_tracker_mutation_backend",
+        lambda service_config: backend,
+    )
+
+    service = build_tracker_mutation_service(config)
+
+    assert service.backend is backend
+    assert service.project_slug == "symphony"
 
 
 def test_transition_issue_returns_noop_for_redundant_target_state(

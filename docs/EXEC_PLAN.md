@@ -15,7 +15,8 @@ The most important outcome is architectural, not cosmetic. The repository must s
 - [x] 2026-03-11 03:22Z: Read `.agent/PLANS.md`, the tracker sections of `docs/SPEC.md`, the current `docs/EXEC_PLAN.md`, and the relevant backend modules to identify where tracker behavior is coupled to Linear today.
 - [x] 2026-03-11 03:22Z: Used Context7 to capture the current Plane API facts needed for planning: self-hosted instances use a deployment-specific base URL, server-to-server requests authenticate with `X-API-Key`, issues are exposed through REST paths under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`, comments are exposed under `/comments/`, and issue links are exposed under `/links/`.
 - [x] 2026-03-11 03:22Z: Replaced the completed roadmap closeout plan with this new active ExecPlan focused on Plane integration and tracker abstraction.
-- [ ] Implement the adapter framework so `orchestrator/core.py` and `tracker/write_service.py` no longer instantiate `LinearTrackerClient` directly.
+- [x] 2026-03-11 05:14Z: Completed Milestone 1. Added `apps/api/symphony/tracker/interfaces.py` and `apps/api/symphony/tracker/factory.py`, routed `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/tracker/write_service.py` through those shared seams, and added focused tests for the new factory path.
+- [x] 2026-03-11 05:14Z: Validated Milestone 1 in a sanitized shell environment that unsets inherited `LINEAR_API_KEY`, `SYMPHONY_RUNTIME_*`, `SYMPHONY_WORKFLOW_PATH`, and `VIRTUAL_ENV` exports. Evidence: pre-change baseline `114 passed in 4.12s`; post-change milestone suite `107 passed in 4.15s`; focused factory tests `2 passed in 0.04s`; combined regression check `109 passed in 4.12s`; `uv run ruff check ...` and `uv run mypy apps/api` both passed.
 - [ ] Extend workflow configuration and validation so `tracker.kind: plane` is a first-class typed configuration with self-host-friendly fields.
 - [ ] Add a Plane adapter for issue reads, issue normalization, issue comments, issue state transitions, and pull request link attachment.
 - [ ] Update tests, docs, and operator-facing examples so the repository describes a pluggable tracker system instead of a Linear-only system.
@@ -33,6 +34,9 @@ The most important outcome is architectural, not cosmetic. The repository must s
 
 - Observation: Plane has an obvious match for comments and a plausible match for pull request metadata, but the current Symphony “attachment” naming no longer fits the external system cleanly.
   Evidence: Context7 exposes Plane comment endpoints and issue link endpoints, but the current Symphony write contract is named around `TrackerAttachment` and serializes `attachment_id`, which reflects Linear `attachmentCreate` rather than a tracker-neutral concept.
+
+- Observation: the focused Milestone 1 pytest baselines are sensitive to inherited shell exports from another live Symphony workspace, even before tracker refactor code changes.
+  Evidence: running the documented pre-change suite in the inherited shell failed with `16 failed, 98 passed in 3.60s` because `LINEAR_API_KEY` changed workflow-config expectations and `SYMPHONY_RUNTIME_*` plus `SYMPHONY_WORKFLOW_PATH` pointed at another workspace’s live runtime files; rerunning the exact suite with those variables unset passed with `114 passed in 4.12s`.
 
 ## Decision Log
 
@@ -58,13 +62,13 @@ The most important outcome is architectural, not cosmetic. The repository must s
 
 ## Outcomes & Retrospective
 
-This plan replaces the previous completed roadmap closeout document with a new active implementation plan. No code has been changed yet. The repository now has a concrete design and sequencing document for adding Plane self-host support without turning the orchestration layer into a pile of tracker-specific branches. The main lesson from the research phase is that the correct first move is to formalize adapter boundaries and typed configuration, because the orchestrator core is already generic enough to benefit from that separation.
+Milestone 1 is now complete on this branch. The repository has a concrete tracker extension seam: `apps/api/symphony/tracker/interfaces.py` defines the shared read and mutation protocols, `apps/api/symphony/tracker/factory.py` is the single runtime selector for tracker adapters, and the orchestrator plus write service no longer construct `LinearTrackerClient` directly outside the tracker package. The main lesson from this milestone is that the adapter boundary was genuinely low-risk: the Linear implementation stayed intact while the call sites became tracker-neutral. The remaining work is now concentrated in configuration typing, Plane transport, and write-contract neutralization rather than in runtime wiring.
 
 ## Context and Orientation
 
 Symphony is a long-running service that polls a tracker, decides which issues are eligible to run, starts a Codex-backed worker for each eligible issue, keeps runtime state in memory, and publishes a read-only runtime snapshot for the HTTP API and Angular UI. In this repository, the “orchestrator” is the scheduling and retry loop in `apps/api/symphony/orchestrator/core.py`. A “tracker adapter” is the module that knows how to talk to one external issue tracker and convert its payloads into Symphony’s normalized domain models.
 
-Today the repository is only partially abstracted. The normalized `Issue` model lives in `apps/api/symphony/tracker/models.py`, and `TrackerMutationService` in `apps/api/symphony/tracker/write_service.py` already hides some write orchestration details behind a backend protocol. However, the concrete implementation is still hard-wired to Linear in multiple places.
+The repository is now partly through the abstraction work. The normalized `Issue` model lives in `apps/api/symphony/tracker/models.py`. `apps/api/symphony/tracker/interfaces.py` defines `TrackerReadClient` and `TrackerMutationBackend`, and `apps/api/symphony/tracker/factory.py` is now the only runtime place that chooses the concrete tracker adapter. `TrackerMutationService` in `apps/api/symphony/tracker/write_service.py` already hides some write orchestration details behind that backend protocol. The remaining coupling is no longer runtime construction; it is mainly configuration shape and Linear-flavored write-contract vocabulary.
 
 The current hot spots are these:
 
@@ -74,7 +78,7 @@ The current hot spots are these:
 
 `apps/api/symphony/tracker/linear.py` normalizes Linear issue payloads into `Issue`, including label, blocker, branch, and timestamp extraction.
 
-`apps/api/symphony/orchestrator/core.py` defines `TrackerClientProtocol`, but it still constructs `LinearTrackerClient` directly during startup and config reload.
+`apps/api/symphony/orchestrator/core.py` now imports `TrackerReadClient` and `build_tracker_read_client` from the tracker package, so future tracker kinds can plug in without changing orchestration code.
 
 `apps/api/symphony/tracker/write_contract.py` and `apps/api/symphony/tracker/write_service.py` present a partly generic write contract, but that contract still carries Linear vocabulary through `team_id`, `project_slug`, `TrackerAttachment`, GraphQL-oriented metadata validation language, and direct normalization of Linear exception types.
 
@@ -84,7 +88,7 @@ The Context7 research adds the key external facts that shape this plan. Plane’
 
 ## Plan of Work
 
-The work begins by creating a strict adapter boundary. In `apps/api/symphony/tracker/`, add a small interface module and a factory module. The interface module must define the read protocol used by the orchestrator and the mutation backend protocol used by `TrackerMutationService`. The factory module must be the only place that chooses a concrete tracker implementation from `ServiceConfig`. After this milestone, `apps/api/symphony/orchestrator/core.py` must depend only on the read protocol and the factory, and `apps/api/symphony/tracker/write_service.py` must depend only on the mutation backend protocol and the factory. No runtime module outside the tracker package may import `LinearTrackerClient` or `PlaneTrackerClient` directly.
+The strict adapter boundary is now in place. `apps/api/symphony/tracker/interfaces.py` defines the read protocol used by the orchestrator and the mutation backend protocol used by `TrackerMutationService`. `apps/api/symphony/tracker/factory.py` is the only runtime module that chooses a concrete tracker implementation from `ServiceConfig`. `apps/api/symphony/orchestrator/core.py` now depends on the read protocol and the factory, and `apps/api/symphony/tracker/write_service.py` now depends on the mutation backend protocol and the factory. No runtime module outside the tracker package imports `LinearTrackerClient` directly anymore. Future milestones must preserve this boundary instead of reintroducing tracker selection elsewhere.
 
 At the same time, reshape workflow configuration to stop reinterpreting Linear names as generic concepts. In `apps/api/symphony/workflow/config.py`, replace the single flat tracker dataclass with a small family of typed dataclasses. `LinearTrackerConfig` should keep the existing GraphQL endpoint and `project_slug` semantics. `PlaneTrackerConfig` should carry `api_base_url`, `api_key`, `workspace_slug`, and `project_id`, plus the shared `active_states` and `terminal_states`. `ServiceConfig.tracker` becomes a union of those dataclasses. `build_service_config(...)` and `validate_dispatch_config(...)` must branch by tracker kind and produce precise error messages for missing Plane fields without disturbing Linear behavior. This is the core design move that prevents later semantic drift.
 
@@ -330,3 +334,5 @@ In `apps/api/symphony/tracker/plane_client.py`, define:
 This client must be the single owner of Plane URL construction, authentication headers, payload parsing, pagination handling, and Plane-specific exception mapping.
 
 Plan revision note: 2026-03-11 / Codex. Replaced the completed roadmap closeout plan with a new active ExecPlan focused on introducing a tracker adapter framework and a Plane self-host integration path, because the repository’s next major change is no longer roadmap closeout work but a tracker abstraction and second adapter implementation.
+
+Plan revision note: 2026-03-11 05:15Z / Codex. Updated the living plan after Milestone 1 landed so `Progress`, `Surprises & Discoveries`, `Outcomes & Retrospective`, and the current repository orientation match the branch state. Added the adapter-factory completion evidence and documented that inherited `LINEAR_API_KEY` plus `SYMPHONY_RUNTIME_*` exports from another workspace must be unset for the focused tracker baseline to be deterministic.
