@@ -460,7 +460,10 @@ def test_get_issue_reference_queries_by_human_identifier() -> None:
     assert issue is not None
     assert issue.identifier == "SYM-042"
     assert issue.state_name == "Todo"
+    assert issue.workflow_scope_id == "team-1"
     assert issue.team_id == "team-1"
+    assert issue.project_ref == "symphony"
+    assert issue.project_slug == "symphony"
     assert transport.calls[0]["variables"] == {
         "projectSlug": "symphony",
         "issueIdentifier": "SYM-042",
@@ -468,7 +471,7 @@ def test_get_issue_reference_queries_by_human_identifier() -> None:
     assert transport.calls[0]["query"] == FETCH_TRACKER_ISSUE_REFERENCE_QUERY
 
 
-def test_list_workflow_states_returns_team_scoped_state_records() -> None:
+def test_list_workflow_states_returns_workflow_scoped_state_records() -> None:
     transport = RecordingTransport(
         response=LinearTransportResponse(
             status_code=200,
@@ -495,10 +498,11 @@ def test_list_workflow_states_returns_team_scoped_state_records() -> None:
 
     states = client.list_workflow_states()
 
-    assert [(state.id, state.name, state.team_id) for state in states] == [
+    assert [(state.id, state.name, state.workflow_scope_id) for state in states] == [
         ("state-1", "Todo", "team-1"),
         ("state-2", "In Progress", "team-1"),
     ]
+    assert [state.team_id for state in states] == ["team-1", "team-1"]
     assert transport.calls[0]["query"] == FETCH_WORKFLOW_STATES_QUERY
     assert transport.calls[0]["variables"] == {
         "first": DEFAULT_LINEAR_PAGE_SIZE,
@@ -625,7 +629,7 @@ def test_update_issue_state_returns_updated_issue_reference() -> None:
     assert transport.calls[0]["variables"] == {"issueId": "issue-42", "stateId": "state-2"}
 
 
-def test_create_attachment_sends_scalar_inputs_as_variables() -> None:
+def test_create_issue_link_sends_scalar_inputs_as_variables() -> None:
     transport = RecordingTransport(
         response=LinearTransportResponse(
             status_code=200,
@@ -652,7 +656,7 @@ def test_create_attachment_sends_scalar_inputs_as_variables() -> None:
     )
     client = LinearTrackerClient(make_tracker_config(), transport=transport)
 
-    attachment = client.create_attachment(
+    issue_link = client.create_issue_link(
         issue_id="issue-42",
         title="PR #1",
         url="https://github.com/acme/symphony/pull/1",
@@ -660,8 +664,8 @@ def test_create_attachment_sends_scalar_inputs_as_variables() -> None:
         metadata={"branch_name": "feature/sym-123", "status": "open"},
     )
 
-    assert attachment.id == "attachment-1"
-    assert attachment.metadata["branch_name"] == "feature/sym-123"
+    assert issue_link.id == "attachment-1"
+    assert issue_link.metadata["branch_name"] == "feature/sym-123"
     assert transport.calls[0]["query"] == CREATE_ATTACHMENT_MUTATION
     assert transport.calls[0]["variables"] == {
         "issueId": "issue-42",
@@ -672,12 +676,12 @@ def test_create_attachment_sends_scalar_inputs_as_variables() -> None:
     }
 
 
-def test_create_attachment_rejects_non_finite_metadata_before_transport() -> None:
+def test_create_issue_link_rejects_non_finite_metadata_before_transport() -> None:
     transport = RecordingTransport()
     client = LinearTrackerClient(make_tracker_config(), transport=transport)
 
     with pytest.raises(LinearPayloadError, match="request contains malformed metadata"):
-        client.create_attachment(
+        client.create_issue_link(
             issue_id="issue-42",
             title="PR #2",
             url="https://github.com/acme/symphony/pull/2",
@@ -686,3 +690,39 @@ def test_create_attachment_rejects_non_finite_metadata_before_transport() -> Non
         )
 
     assert transport.calls == []
+
+
+def test_create_attachment_aliases_create_issue_link() -> None:
+    transport = RecordingTransport(
+        response=LinearTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "data": {
+                        "attachmentCreate": {
+                            "success": True,
+                            "attachment": {
+                                "id": "attachment-9",
+                                "title": "PR #9",
+                                "url": "https://github.com/acme/symphony/pull/9",
+                                "subtitle": "Merged",
+                                "metadata": {"status": "merged"},
+                            },
+                        }
+                    }
+                }
+            ),
+        )
+    )
+    client = LinearTrackerClient(make_tracker_config(), transport=transport)
+
+    attachment = client.create_attachment(
+        issue_id="issue-42",
+        title="PR #9",
+        url="https://github.com/acme/symphony/pull/9",
+        subtitle="Merged",
+        metadata={"status": "merged"},
+    )
+
+    assert attachment.id == "attachment-9"
+    assert attachment.metadata == {"status": "merged"}

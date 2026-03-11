@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TypeVar
+from typing import Protocol, TypeVar, cast
 from urllib.parse import urlparse
 
 from symphony.observability.logging import log_event
@@ -25,6 +25,7 @@ from .write_contract import (
     TrackerCommentRequest,
     TrackerCommentResult,
     TrackerInvalidTransitionError,
+    TrackerIssueLink,
     TrackerIssueNotFoundError,
     TrackerIssueReference,
     TrackerPullRequestRequest,
@@ -47,10 +48,40 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-@dataclass(slots=True)
+class _CreateIssueLinkCallable(Protocol):
+    def __call__(
+        self,
+        *,
+        issue_id: str,
+        title: str,
+        url: str,
+        subtitle: str | None,
+        metadata: Mapping[str, JsonScalar],
+    ) -> TrackerIssueLink: ...
+
+
+@dataclass(slots=True, init=False)
 class TrackerMutationService:
     backend: TrackerMutationBackend
-    project_slug: str | None
+    project_ref: str | None
+
+    def __init__(
+        self,
+        backend: TrackerMutationBackend,
+        project_ref: str | None = None,
+        *,
+        project_slug: str | None = None,
+    ) -> None:
+        if project_ref is not None and project_slug is not None and project_ref != project_slug:
+            raise TypeError(
+                "'project_ref' and legacy alias 'project_slug' received conflicting values."
+            )
+        self.backend = backend
+        self.project_ref = project_ref if project_ref is not None else project_slug
+
+    @property
+    def project_slug(self) -> str | None:
+        return self.project_ref
 
     def add_comment(self, request: TrackerCommentRequest) -> TrackerCommentResult:
         issue_identifier = request.issue_identifier.strip()
@@ -151,8 +182,8 @@ class TrackerMutationService:
 
         try:
             issue = self._require_issue_reference(issue_identifier)
-            attachment = self._call_backend(
-                lambda: self.backend.create_attachment(
+            issue_link = self._call_backend(
+                lambda: self._create_issue_link(
                     issue_id=issue.id,
                     title=title,
                     url=url,
@@ -164,11 +195,7 @@ class TrackerMutationService:
                 issue_id=issue.id,
                 issue_identifier=issue.identifier,
                 status="applied",
-                attachment_id=attachment.id,
-                title=attachment.title,
-                url=attachment.url,
-                subtitle=attachment.subtitle,
-                metadata=attachment.metadata,
+                issue_link=issue_link,
             )
         except Exception as exc:
             self._log_pull_request(
@@ -182,7 +209,7 @@ class TrackerMutationService:
         self._log_pull_request(
             issue_id=result.issue_id,
             issue_identifier=result.issue_identifier,
-            url=result.url,
+            url=result.issue_link.url,
             status=result.status,
             attachment_id=result.attachment_id,
         )
@@ -194,7 +221,7 @@ class TrackerMutationService:
             raise TrackerIssueNotFoundError(
                 f"Issue {issue_identifier!r} was not found in the configured tracker project."
             )
-        if self.project_slug and issue.project_slug != self.project_slug:
+        if self.project_ref and issue.project_ref != self.project_ref:
             raise TrackerIssueNotFoundError(
                 f"Issue {issue_identifier!r} was not found in the configured tracker project."
             )
@@ -208,7 +235,7 @@ class TrackerMutationService:
     ) -> str:
         workflow_states = self._call_backend(self.backend.list_workflow_states)
         for state in workflow_states:
-            if state.team_id == issue.team_id and state.name == target_state:
+            if state.workflow_scope_id == issue.workflow_scope_id and state.name == target_state:
                 return state.id
         raise TrackerInvalidTransitionError(
             f"State {target_state!r} is not a valid workflow state for {issue.identifier!r}."
@@ -242,6 +269,45 @@ class TrackerMutationService:
         if request.status is not None and request.status.strip():
             metadata["status"] = request.status.strip()
         return metadata
+
+    def _create_issue_link(
+        self,
+        *,
+        issue_id: str,
+        title: str,
+        url: str,
+        subtitle: str | None,
+        metadata: dict[str, JsonScalar],
+    ) -> TrackerIssueLink:
+        create_issue_link = cast(
+            _CreateIssueLinkCallable | None,
+            getattr(self.backend, "create_issue_link", None),
+        )
+        if callable(create_issue_link):
+            return create_issue_link(
+                issue_id=issue_id,
+                title=title,
+                url=url,
+                subtitle=subtitle,
+                metadata=metadata,
+            )
+
+        create_attachment = cast(
+            _CreateIssueLinkCallable | None,
+            getattr(self.backend, "create_attachment", None),
+        )
+        if callable(create_attachment):
+            return create_attachment(
+                issue_id=issue_id,
+                title=title,
+                url=url,
+                subtitle=subtitle,
+                metadata=metadata,
+            )
+
+        raise AttributeError(
+            "Tracker mutation backend must implement create_issue_link() or create_attachment()."
+        )
 
     def _call_backend(self, func: Callable[[], _T]) -> _T:
         try:
@@ -349,7 +415,7 @@ def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationServ
 
     return TrackerMutationService(
         backend=build_tracker_mutation_backend(config),
-        project_slug=tracker.project_slug,
+        project_ref=tracker.project_slug,
     )
 
 

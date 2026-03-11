@@ -8,11 +8,11 @@ import pytest
 from django.test import Client
 from symphony.api.views import _build_tracker_mutation_service
 from symphony.tracker.write_contract import (
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
     TrackerInvalidTransitionError,
+    TrackerIssueLink,
     TrackerIssueReference,
     TrackerPullRequestRequest,
     TrackerPullRequestResult,
@@ -63,11 +63,13 @@ class FakeTrackerMutationService:
             issue_id="issue-123",
             issue_identifier=request.issue_identifier,
             status="applied",
-            attachment_id="attachment-1",
-            title=request.title,
-            url=request.url,
-            subtitle=request.subtitle,
-            metadata=dict(request.metadata),
+            issue_link=TrackerIssueLink(
+                id="attachment-1",
+                title=request.title,
+                url=request.url,
+                subtitle=request.subtitle,
+                metadata=dict(request.metadata),
+            ),
         )
 
 
@@ -155,9 +157,9 @@ def test_tracker_transition_endpoint_rejects_invalid_transition(
 def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class IdempotentAttachmentBackend:
+    class IdempotentIssueLinkBackend:
         def __init__(self) -> None:
-            self.attachments: dict[tuple[str, str], TrackerAttachment] = {}
+            self.issue_links: dict[tuple[str, str], TrackerIssueLink] = {}
 
         def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
             return TrackerIssueReference(
@@ -165,8 +167,8 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
                 identifier=issue_identifier,
                 state_id="state-todo",
                 state_name="Todo",
-                team_id="team-1",
-                project_slug="symphony",
+                workflow_scope_id="team-1",
+                project_ref="symphony",
             )
 
         def list_workflow_states(self) -> list[TrackerWorkflowState]:
@@ -178,7 +180,7 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
         def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference:
             raise AssertionError("State transitions are not used in this test.")
 
-        def create_attachment(
+        def create_issue_link(
             self,
             *,
             issue_id: str,
@@ -186,11 +188,11 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
             url: str,
             subtitle: str | None,
             metadata: Mapping[str, str | int | float | bool],
-        ) -> TrackerAttachment:
+        ) -> TrackerIssueLink:
             key = (issue_id, url)
-            attachment = self.attachments.get(key)
-            if attachment is None:
-                attachment = TrackerAttachment(
+            issue_link = self.issue_links.get(key)
+            if issue_link is None:
+                issue_link = TrackerIssueLink(
                     id="attachment-1",
                     title=title,
                     url=url,
@@ -198,20 +200,20 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
                     metadata=dict(metadata),
                 )
             else:
-                attachment = TrackerAttachment(
-                    id=attachment.id,
+                issue_link = TrackerIssueLink(
+                    id=issue_link.id,
                     title=title,
                     url=url,
                     subtitle=subtitle,
                     metadata=dict(metadata),
                 )
-            self.attachments[key] = attachment
-            return attachment
+            self.issue_links[key] = issue_link
+            return issue_link
 
-    backend = IdempotentAttachmentBackend()
+    backend = IdempotentIssueLinkBackend()
     monkeypatch.setattr(
         "symphony.api.views._build_tracker_mutation_service",
-        lambda: TrackerMutationService(backend=backend, project_slug="symphony"),
+        lambda: TrackerMutationService(backend=backend, project_ref="symphony"),
     )
 
     payload = {
@@ -235,7 +237,7 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert first_response.json() == second_response.json()
-    assert len(backend.attachments) == 1
+    assert len(backend.issue_links) == 1
 
 
 def test_tracker_pull_request_endpoint_rejects_get() -> None:
@@ -256,9 +258,9 @@ def test_tracker_pull_request_endpoint_rejects_get() -> None:
 def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class AttachmentBackend:
+    class IssueLinkBackend:
         def __init__(self) -> None:
-            self.attachment_calls = 0
+            self.issue_link_calls = 0
 
         def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
             return TrackerIssueReference(
@@ -266,8 +268,8 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
                 identifier=issue_identifier,
                 state_id="state-todo",
                 state_name="Todo",
-                team_id="team-1",
-                project_slug="symphony",
+                workflow_scope_id="team-1",
+                project_ref="symphony",
             )
 
         def list_workflow_states(self) -> list[TrackerWorkflowState]:
@@ -279,7 +281,7 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
         def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference:
             raise AssertionError("State transitions are not used in this test.")
 
-        def create_attachment(
+        def create_issue_link(
             self,
             *,
             issue_id: str,
@@ -287,9 +289,9 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
             url: str,
             subtitle: str | None,
             metadata: Mapping[str, str | int | float | bool],
-        ) -> TrackerAttachment:
-            self.attachment_calls += 1
-            return TrackerAttachment(
+        ) -> TrackerIssueLink:
+            self.issue_link_calls += 1
+            return TrackerIssueLink(
                 id="attachment-1",
                 title=title,
                 url=url,
@@ -297,10 +299,10 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
                 metadata=dict(metadata),
             )
 
-    backend = AttachmentBackend()
+    backend = IssueLinkBackend()
     monkeypatch.setattr(
         "symphony.api.views._build_tracker_mutation_service",
-        lambda: TrackerMutationService(backend=backend, project_slug="symphony"),
+        lambda: TrackerMutationService(backend=backend, project_ref="symphony"),
     )
 
     response = Client().post(
@@ -319,7 +321,7 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
             ),
         }
     }
-    assert backend.attachment_calls == 0
+    assert backend.issue_link_calls == 0
 
 
 def test_build_tracker_mutation_service_uses_env_workflow_path(
@@ -344,5 +346,6 @@ tracker:
 
     service = _build_tracker_mutation_service()
 
+    assert service.project_ref == "runtime-project"
     assert service.project_slug == "runtime-project"
     _build_tracker_mutation_service.cache_clear()

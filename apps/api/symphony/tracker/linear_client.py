@@ -15,6 +15,7 @@ from .write_contract import (
     JsonScalar,
     TrackerAttachment,
     TrackerComment,
+    TrackerIssueLink,
     TrackerIssueReference,
     TrackerWorkflowState,
     is_valid_json_scalar,
@@ -426,7 +427,7 @@ class LinearTrackerClient:
             raise LinearPayloadError("Linear issueUpdate response is missing issue data.")
         return _normalize_issue_reference(issue_node)
 
-    def create_attachment(
+    def create_issue_link(
         self,
         *,
         issue_id: str,
@@ -434,7 +435,7 @@ class LinearTrackerClient:
         url: str,
         subtitle: str | None,
         metadata: Mapping[str, JsonScalar],
-    ) -> TrackerAttachment:
+    ) -> TrackerIssueLink:
         validated_metadata = _validate_attachment_metadata(metadata)
         payload = self._fetch_graphql_payload(
             query=CREATE_ATTACHMENT_MUTATION,
@@ -447,7 +448,24 @@ class LinearTrackerClient:
             },
         )
         mutation = _extract_mutation_payload(payload, "attachmentCreate")
-        return _extract_attachment(mutation)
+        return _extract_issue_link(mutation)
+
+    def create_attachment(
+        self,
+        *,
+        issue_id: str,
+        title: str,
+        url: str,
+        subtitle: str | None,
+        metadata: Mapping[str, JsonScalar],
+    ) -> TrackerAttachment:
+        return self.create_issue_link(
+            issue_id=issue_id,
+            title=title,
+            url=url,
+            subtitle=subtitle,
+            metadata=metadata,
+        )
 
     def _fetch_graphql_payload(
         self,
@@ -649,25 +667,29 @@ def _normalize_issue_reference(node: Mapping[str, Any]) -> TrackerIssueReference
     team = node.get("team")
     if not isinstance(team, Mapping):
         raise LinearPayloadError("Linear issue response is missing issue.team.")
-    team_id = _require_string(team, "id", "Linear issue response is missing issue.team.id.")
+    workflow_scope_id = _require_string(
+        team,
+        "id",
+        "Linear issue response is missing issue.team.id.",
+    )
     project = node.get("project")
-    project_slug: str | None = None
+    project_ref: str | None = None
     if project is not None:
         if not isinstance(project, Mapping):
             raise LinearPayloadError("Linear issue response contains a malformed issue.project.")
-        raw_project_slug = project.get("slugId")
-        if raw_project_slug is not None and not isinstance(raw_project_slug, str):
+        raw_project_ref = project.get("slugId")
+        if raw_project_ref is not None and not isinstance(raw_project_ref, str):
             raise LinearPayloadError(
                 "Linear issue response contains a malformed issue.project.slugId."
             )
-        project_slug = raw_project_slug
+        project_ref = raw_project_ref
     return TrackerIssueReference(
         id=issue_id,
         identifier=identifier,
         state_id=state_id,
         state_name=state_name,
-        team_id=team_id,
-        project_slug=project_slug,
+        workflow_scope_id=workflow_scope_id,
+        project_ref=project_ref,
     )
 
 
@@ -685,12 +707,16 @@ def _normalize_workflow_state(node: Mapping[str, Any]) -> TrackerWorkflowState:
     team = node.get("team")
     if not isinstance(team, Mapping):
         raise LinearPayloadError("Linear workflow state response is missing workflow state team.")
-    team_id = _require_string(
+    workflow_scope_id = _require_string(
         team,
         "id",
         "Linear workflow state response is missing workflow state team id.",
     )
-    return TrackerWorkflowState(id=state_id, name=name, team_id=team_id)
+    return TrackerWorkflowState(
+        id=state_id,
+        name=name,
+        workflow_scope_id=workflow_scope_id,
+    )
 
 
 def _extract_comment(mutation: Mapping[str, Any]) -> TrackerComment:
@@ -713,7 +739,7 @@ def _extract_comment(mutation: Mapping[str, Any]) -> TrackerComment:
     return TrackerComment(id=comment_id, body=body, url=url)
 
 
-def _extract_attachment(mutation: Mapping[str, Any]) -> TrackerAttachment:
+def _extract_issue_link(mutation: Mapping[str, Any]) -> TrackerIssueLink:
     attachment = mutation.get("attachment")
     if not isinstance(attachment, Mapping):
         raise LinearPayloadError("Linear attachmentCreate response is missing attachment data.")
@@ -742,7 +768,7 @@ def _extract_attachment(mutation: Mapping[str, Any]) -> TrackerAttachment:
         normalized_metadata: dict[str, JsonScalar] = {}
     else:
         normalized_metadata = _normalize_attachment_metadata(metadata)
-    return TrackerAttachment(
+    return TrackerIssueLink(
         id=attachment_id,
         title=title,
         url=url,
