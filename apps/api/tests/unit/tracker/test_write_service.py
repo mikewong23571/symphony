@@ -5,6 +5,7 @@ import math
 from collections.abc import Iterator, Mapping
 
 import pytest
+from symphony.tracker.linear_client import LinearAPIRequestError
 from symphony.tracker.write_contract import (
     TrackerAttachment,
     TrackerComment,
@@ -55,13 +56,14 @@ def write_service_logs() -> Iterator[list[str]]:
 
 class FakeMutationBackend:
     def __init__(self) -> None:
+        self.project_ref: str | None = "symphony"
         self.issue = TrackerIssueReference(
             id="issue-123",
             identifier="SYM-123",
             state_id="state-todo",
             state_name="Todo",
             workflow_scope_id="team-1",
-            project_ref="symphony",
+            project_ref=self.project_ref,
         )
         self.workflow_states = [
             TrackerWorkflowState(id="state-todo", name="Todo", workflow_scope_id="team-1"),
@@ -156,6 +158,10 @@ class LegacyAttachmentBackend:
     def issue_links(self) -> list[dict[str, object]]:
         return self.delegate.issue_links
 
+    @property
+    def project_ref(self) -> str | None:
+        return self.delegate.project_ref
+
     def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
         return self.delegate.get_issue_reference(issue_identifier)
 
@@ -203,6 +209,7 @@ def test_build_tracker_mutation_service_uses_factory(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend = FakeMutationBackend()
+    backend.project_ref = "factory-project"
     config = build_service_config(
         WorkflowDefinition(
             config={
@@ -226,8 +233,8 @@ def test_build_tracker_mutation_service_uses_factory(
     service = build_tracker_mutation_service(config)
 
     assert service.backend is backend
-    assert service.project_ref == "symphony"
-    assert service.project_slug == "symphony"
+    assert service.project_ref == "factory-project"
+    assert service.project_slug == "factory-project"
 
 
 def test_tracker_contracts_accept_legacy_constructor_keywords() -> None:
@@ -585,7 +592,7 @@ def test_service_rejects_missing_issue() -> None:
 
 def test_service_normalizes_linear_request_failure() -> None:
     backend = FakeMutationBackend()
-    backend.fail_with = TrackerRequestFailedError("Linear API request failed.")
+    backend.fail_with = LinearAPIRequestError("Linear API request failed.")
     service = TrackerMutationService(backend=backend, project_ref="symphony")
 
     with pytest.raises(TrackerRequestFailedError):

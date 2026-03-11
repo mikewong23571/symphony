@@ -9,7 +9,6 @@ from urllib.parse import urlparse
 
 from symphony.observability.logging import log_event
 from symphony.workflow import ServiceConfig
-from symphony.workflow.config import require_linear_tracker_config
 
 from .factory import build_tracker_mutation_backend
 from .interfaces import TrackerMutationBackend
@@ -24,10 +23,12 @@ from .write_contract import (
     JsonScalar,
     TrackerCommentRequest,
     TrackerCommentResult,
+    TrackerGraphQLError,
     TrackerInvalidTransitionError,
     TrackerIssueLink,
     TrackerIssueNotFoundError,
     TrackerIssueReference,
+    TrackerPayloadError,
     TrackerPullRequestRequest,
     TrackerPullRequestResult,
     TrackerRequestFailedError,
@@ -36,12 +37,6 @@ from .write_contract import (
     TrackerTransitionResult,
     TrackerValidationError,
     is_valid_json_scalar,
-)
-from .write_contract import (
-    TrackerGraphQLError as TrackerGraphQLMutationError,
-)
-from .write_contract import (
-    TrackerPayloadError as TrackerPayloadMutationError,
 )
 
 logger = logging.getLogger(__name__)
@@ -312,16 +307,14 @@ class TrackerMutationService:
     def _call_backend(self, func: Callable[[], _T]) -> _T:
         try:
             return func()
-        except (TrackerValidationError, TrackerIssueNotFoundError, TrackerInvalidTransitionError):
-            raise
         except LinearAPIRequestError as exc:
             raise TrackerRequestFailedError(str(exc)) from exc
         except LinearAPIStatusError as exc:
             raise TrackerStatusError(str(exc)) from exc
         except LinearGraphQLError as exc:
-            raise TrackerGraphQLMutationError(str(exc)) from exc
+            raise TrackerGraphQLError(str(exc)) from exc
         except LinearPayloadError as exc:
-            raise TrackerPayloadMutationError(str(exc)) from exc
+            raise TrackerPayloadError(str(exc)) from exc
         except LinearAPIError as exc:
             raise TrackerRequestFailedError(str(exc)) from exc
 
@@ -411,11 +404,11 @@ class TrackerMutationService:
 
 
 def build_tracker_mutation_service(config: ServiceConfig) -> TrackerMutationService:
-    tracker = require_linear_tracker_config(config.tracker)
+    backend = build_tracker_mutation_backend(config)
 
     return TrackerMutationService(
-        backend=build_tracker_mutation_backend(config),
-        project_ref=tracker.project_slug,
+        backend=backend,
+        project_ref=backend.project_ref,
     )
 
 
