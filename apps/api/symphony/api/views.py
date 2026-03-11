@@ -2,12 +2,21 @@ from __future__ import annotations
 
 import functools
 import json
+from collections.abc import Iterator
 from html import escape
+from typing import Any
 from urllib.parse import quote
 
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import (
+    HttpRequest,
+    HttpResponse,
+    HttpResponseBase,
+    JsonResponse,
+    StreamingHttpResponse,
+)
 from django.views.decorators.csrf import csrf_exempt
 
+from symphony.observability.events import wait_for_runtime_invalidation
 from symphony.observability.runtime import (
     RuntimeIssueNotFoundError,
     RuntimeSnapshotUnavailableError,
@@ -39,7 +48,9 @@ ALLOWED_DASHBOARD_METHODS = "GET, HEAD"
 ALLOWED_STATE_METHODS = "GET, HEAD"
 ALLOWED_ISSUE_METHODS = "GET, HEAD"
 ALLOWED_REFRESH_METHODS = "POST"
+ALLOWED_EVENTS_METHODS = "GET"
 ALLOWED_TRACKER_MUTATION_METHODS = "POST"
+RUNTIME_EVENTS_KEEPALIVE_SECONDS = 15.0
 
 
 def healthcheck(_request: HttpRequest) -> JsonResponse:
@@ -169,6 +180,44 @@ def runtime_refresh(request: HttpRequest) -> JsonResponse:
         return _error_response(code="timeout", message=str(exc), status=503)
 
     return JsonResponse(refresh_request, status=202)
+
+
+@csrf_exempt
+def runtime_events(request: HttpRequest) -> HttpResponseBase:
+    if request.method != "GET":
+        response = _error_response(
+            code="method_not_allowed",
+            message=f"Method {request.method!r} is not allowed for /api/v1/events.",
+            status=405,
+        )
+        response["Allow"] = ALLOWED_EVENTS_METHODS
+        return response
+
+    last_event_id = _parse_last_event_id(
+        request.headers.get("Last-Event-ID") or request.GET.get("lastEventId")
+    )
+
+    def stream_events() -> Iterator[str]:
+        current_sequence = last_event_id
+        yield ": connected\n\n"
+        while True:
+            event = wait_for_runtime_invalidation(
+                after_sequence=current_sequence,
+                timeout_seconds=RUNTIME_EVENTS_KEEPALIVE_SECONDS,
+            )
+            if event is None:
+                yield ": keepalive\n\n"
+                continue
+            current_sequence = int(event["sequence"])
+            yield _format_sse_event(event)
+
+    stream_response = StreamingHttpResponse(
+        streaming_content=stream_events(),
+        content_type="text/event-stream",
+    )
+    stream_response["Cache-Control"] = "no-cache"
+    stream_response["X-Accel-Buffering"] = "no"
+    return stream_response
 
 
 @csrf_exempt
@@ -321,6 +370,30 @@ def _error_response(*, code: str, message: str, status: int) -> JsonResponse:
     return JsonResponse(
         {"error": {"code": code, "message": message}},
         status=status,
+    )
+
+
+def _parse_last_event_id(raw_value: str | None) -> int | None:
+    if raw_value is None:
+        return None
+
+    stripped = raw_value.strip()
+    if not stripped:
+        return None
+
+    try:
+        return max(int(stripped), 0)
+    except ValueError:
+        return None
+
+
+def _format_sse_event(event: dict[str, Any]) -> str:
+    return "".join(
+        [
+            f"id: {event['sequence']}\n",
+            f"event: {event['event']}\n",
+            f"data: {json.dumps(event, sort_keys=True)}\n\n",
+        ]
     )
 
 

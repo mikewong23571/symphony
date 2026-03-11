@@ -6,9 +6,15 @@ import tempfile
 from collections.abc import Generator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from django.test import Client
+from symphony.observability.events import (
+    clear_runtime_invalidations,
+    publish_runtime_invalidation,
+    wait_for_runtime_invalidation,
+)
 from symphony.observability.runtime import (
     DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME,
     DEFAULT_RUNTIME_SNAPSHOT_FILENAME,
@@ -39,11 +45,17 @@ class SilentTrackerClient:
 
 
 @pytest.fixture(autouse=True)
-def clear_snapshot_state() -> Generator[None, None, None]:
+def clear_snapshot_state(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_RECOVERY_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS", raising=False)
+    clear_runtime_invalidations()
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
     _clear_refresh_request_file_best_effort()
     yield
+    clear_runtime_invalidations()
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
     _clear_refresh_request_file_best_effort()
@@ -67,10 +79,11 @@ def build_config(*, tmp_path: Path) -> ServiceConfig:
     )
 
 
-def fresh_snapshot_times() -> dict[str, str]:
+def fresh_snapshot_times(*, revision: int = 1) -> dict[str, str | int]:
     generated_at = datetime.now(UTC)
     expires_at = generated_at + timedelta(minutes=5)
     return {
+        "revision": revision,
         "generated_at": generated_at.isoformat().replace("+00:00", "Z"),
         "expires_at": expires_at.isoformat().replace("+00:00", "Z"),
     }
@@ -184,6 +197,7 @@ def test_state_endpoint_reads_snapshot_written_by_orchestrator(tmp_path: Path) -
 
             assert response.status_code == 200
             assert response.json()["counts"] == {"running": 0, "retrying": 0}
+            assert response.json()["revision"] >= 1
         finally:
             await orchestrator.aclose()
 
@@ -212,6 +226,7 @@ def test_state_endpoint_reads_default_snapshot_path_across_processes(
 
             assert response.status_code == 200
             assert response.json()["counts"] == {"running": 0, "retrying": 0}
+            assert response.json()["revision"] >= 1
         finally:
             await orchestrator.aclose()
 
@@ -246,6 +261,137 @@ def test_refresh_endpoint_queues_runtime_refresh_request() -> None:
     assert consumed_request == {
         "requested_at": payload["requested_at"],
         "operations": ["poll", "reconcile"],
+    }
+
+
+def test_refresh_endpoint_publishes_refresh_queued_invalidation_event() -> None:
+    response = Client().post("/api/v1/refresh", data={})
+
+    assert response.status_code == 202
+    event = wait_for_runtime_invalidation(after_sequence=None, timeout_seconds=0.1)
+    assert event is not None
+    assert event == {
+        "sequence": 1,
+        "event": "refresh_queued",
+        "emitted_at": event["emitted_at"],
+        "queued": True,
+        "coalesced": False,
+        "requested_at": response.json()["requested_at"],
+        "operations": ["poll", "reconcile"],
+    }
+
+
+def test_events_endpoint_streams_runtime_invalidations() -> None:
+    publish_runtime_invalidation(
+        "snapshot_updated",
+        {
+            "revision": 7,
+            "generated_at": "2026-03-11T11:00:00Z",
+            "expires_at": "2026-03-11T11:05:00Z",
+        },
+    )
+
+    response = Client().get("/api/v1/events")
+    try:
+        assert response.status_code == 200
+        assert response["Content-Type"].startswith("text/event-stream")
+        chunks = iter(_streaming_content(response))
+        assert _stream_chunk_text(next(chunks)) == ": connected\n\n"
+        event_chunk = _stream_chunk_text(next(chunks))
+        assert "id: 1" in event_chunk
+        assert "event: snapshot_updated" in event_chunk
+        assert '"revision": 7' in event_chunk
+    finally:
+        response.close()
+
+
+def test_events_endpoint_resumes_after_last_event_id_header() -> None:
+    publish_runtime_invalidation(
+        "snapshot_updated",
+        {
+            "revision": 4,
+            "generated_at": "2026-03-11T11:00:00Z",
+            "expires_at": "2026-03-11T11:05:00Z",
+        },
+    )
+    publish_runtime_invalidation(
+        "snapshot_updated",
+        {
+            "revision": 5,
+            "generated_at": "2026-03-11T11:01:00Z",
+            "expires_at": "2026-03-11T11:06:00Z",
+        },
+    )
+
+    response = Client().get("/api/v1/events", HTTP_LAST_EVENT_ID="1")
+    try:
+        assert response.status_code == 200
+        chunks = iter(_streaming_content(response))
+        assert _stream_chunk_text(next(chunks)) == ": connected\n\n"
+        event_chunk = _stream_chunk_text(next(chunks))
+        assert "id: 2" in event_chunk
+        assert "event: snapshot_updated" in event_chunk
+        assert '"revision": 5' in event_chunk
+    finally:
+        response.close()
+
+
+def test_events_endpoint_accepts_last_event_id_query_parameter() -> None:
+    publish_runtime_invalidation(
+        "snapshot_updated",
+        {
+            "revision": 2,
+            "generated_at": "2026-03-11T11:00:00Z",
+            "expires_at": "2026-03-11T11:05:00Z",
+        },
+    )
+    publish_runtime_invalidation(
+        "issue_changed",
+        {
+            "revision": 3,
+            "issue_identifiers": ["SYM-123"],
+        },
+    )
+
+    response = Client().get("/api/v1/events?lastEventId=1")
+    try:
+        assert response.status_code == 200
+        chunks = iter(_streaming_content(response))
+        assert _stream_chunk_text(next(chunks)) == ": connected\n\n"
+        event_chunk = _stream_chunk_text(next(chunks))
+        assert "id: 2" in event_chunk
+        assert "event: issue_changed" in event_chunk
+        assert '"issue_identifiers": ["SYM-123"]' in event_chunk
+        assert '"revision": 3' in event_chunk
+    finally:
+        response.close()
+
+
+def test_events_endpoint_emits_keepalive_when_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("symphony.api.views.RUNTIME_EVENTS_KEEPALIVE_SECONDS", 0.0)
+
+    response = Client().get("/api/v1/events")
+    try:
+        assert response.status_code == 200
+        chunks = iter(_streaming_content(response))
+        assert _stream_chunk_text(next(chunks)) == ": connected\n\n"
+        assert _stream_chunk_text(next(chunks)) == ": keepalive\n\n"
+    finally:
+        response.close()
+
+
+def test_events_endpoint_rejects_post_with_405_error_envelope() -> None:
+    response = Client().post("/api/v1/events", data={})
+
+    assert response.status_code == 405
+    assert response["Allow"] == "GET"
+    assert response.json() == {
+        "error": {
+            "code": "method_not_allowed",
+            "message": "Method 'POST' is not allowed for /api/v1/events.",
+        }
     }
 
 
@@ -300,9 +446,10 @@ def test_issue_endpoint_returns_503_error_envelope_when_snapshot_is_missing() ->
 
 
 def test_issue_endpoint_returns_running_issue_details() -> None:
+    snapshot_times = fresh_snapshot_times(revision=7)
     publish_runtime_snapshot(
         {
-            **fresh_snapshot_times(),
+            **snapshot_times,
             "counts": {"running": 1, "retrying": 0},
             "running": [
                 {
@@ -338,47 +485,50 @@ def test_issue_endpoint_returns_running_issue_details() -> None:
     response = Client().get("/api/v1/SYM-123")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "issue_identifier": "SYM-123",
-        "issue_id": "issue-123",
-        "status": "running",
-        "workspace": {"path": "/tmp/symphony/SYM-123"},
-        "attempts": {
-            "restart_count": 1,
-            "current_retry_attempt": 2,
-        },
-        "running": {
-            "session_id": "thread-1-turn-2",
-            "turn_count": 7,
-            "state": "In Progress",
-            "started_at": "2026-03-10T09:55:00Z",
-            "last_event": "notification",
-            "last_message": "Working on tests",
-            "last_event_at": "2026-03-10T09:59:30Z",
-            "tokens": {
-                "input_tokens": 1200,
-                "output_tokens": 800,
-                "total_tokens": 2000,
-            },
-        },
-        "retry": None,
-        "logs": {"codex_session_logs": []},
-        "recent_events": [
-            {
-                "at": "2026-03-10T09:59:30Z",
-                "event": "notification",
-                "message": "Working on tests",
-            }
-        ],
-        "last_error": None,
-        "tracked": {},
+    payload = response.json()
+    assert payload["revision"] == 7
+    assert isinstance(payload["generated_at"], str)
+    assert payload["expires_at"] == snapshot_times["expires_at"]
+    assert payload["issue_identifier"] == "SYM-123"
+    assert payload["issue_id"] == "issue-123"
+    assert payload["status"] == "running"
+    assert payload["workspace"] == {"path": "/tmp/symphony/SYM-123"}
+    assert payload["attempts"] == {
+        "restart_count": 1,
+        "current_retry_attempt": 2,
     }
+    assert payload["running"] == {
+        "session_id": "thread-1-turn-2",
+        "turn_count": 7,
+        "state": "In Progress",
+        "started_at": "2026-03-10T09:55:00Z",
+        "last_event": "notification",
+        "last_message": "Working on tests",
+        "last_event_at": "2026-03-10T09:59:30Z",
+        "tokens": {
+            "input_tokens": 1200,
+            "output_tokens": 800,
+            "total_tokens": 2000,
+        },
+    }
+    assert payload["retry"] is None
+    assert payload["logs"] == {"codex_session_logs": []}
+    assert payload["recent_events"] == [
+        {
+            "at": "2026-03-10T09:59:30Z",
+            "event": "notification",
+            "message": "Working on tests",
+        }
+    ]
+    assert payload["last_error"] is None
+    assert payload["tracked"] == {}
 
 
 def test_issue_endpoint_returns_retry_issue_details() -> None:
+    snapshot_times = fresh_snapshot_times(revision=4)
     publish_runtime_snapshot(
         {
-            **fresh_snapshot_times(),
+            **snapshot_times,
             "counts": {"running": 0, "retrying": 1},
             "running": [],
             "retrying": [
@@ -404,26 +554,28 @@ def test_issue_endpoint_returns_retry_issue_details() -> None:
     response = Client().get("/api/v1/SYM-456")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "issue_identifier": "SYM-456",
-        "issue_id": "issue-456",
-        "status": "retrying",
-        "workspace": {"path": "/tmp/symphony/SYM-456"},
-        "attempts": {
-            "restart_count": 2,
-            "current_retry_attempt": 3,
-        },
-        "running": None,
-        "retry": {
-            "attempt": 3,
-            "due_at": "2026-03-10T10:01:00Z",
-            "error": "no available orchestrator slots",
-        },
-        "logs": {"codex_session_logs": []},
-        "recent_events": [],
-        "last_error": "no available orchestrator slots",
-        "tracked": {},
+    payload = response.json()
+    assert payload["revision"] == 4
+    assert isinstance(payload["generated_at"], str)
+    assert payload["expires_at"] == snapshot_times["expires_at"]
+    assert payload["issue_identifier"] == "SYM-456"
+    assert payload["issue_id"] == "issue-456"
+    assert payload["status"] == "retrying"
+    assert payload["workspace"] == {"path": "/tmp/symphony/SYM-456"}
+    assert payload["attempts"] == {
+        "restart_count": 2,
+        "current_retry_attempt": 3,
     }
+    assert payload["running"] is None
+    assert payload["retry"] == {
+        "attempt": 3,
+        "due_at": "2026-03-10T10:01:00Z",
+        "error": "no available orchestrator slots",
+    }
+    assert payload["logs"] == {"codex_session_logs": []}
+    assert payload["recent_events"] == []
+    assert payload["last_error"] == "no available orchestrator slots"
+    assert payload["tracked"] == {}
 
 
 def test_issue_endpoint_returns_404_for_unknown_issue_in_snapshot() -> None:
@@ -619,3 +771,13 @@ def _clear_refresh_request_file_best_effort() -> None:
         clear_runtime_refresh_request_file()
     except RuntimeSnapshotUnavailableError:
         pass
+
+
+def _stream_chunk_text(chunk: bytes | str) -> str:
+    if isinstance(chunk, bytes):
+        return chunk.decode("utf-8")
+    return chunk
+
+
+def _streaming_content(response: object) -> Any:
+    return cast(Any, response).streaming_content

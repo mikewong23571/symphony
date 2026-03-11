@@ -15,7 +15,8 @@ import { MatProgressBarModule } from "@angular/material/progress-bar";
 import { MatIconModule } from "@angular/material/icon";
 import { MatRippleModule } from "@angular/material/core";
 
-import { RuntimeApiService } from "../../shared/api/runtime-api.service";
+import { RuntimeSessionService } from "../../shared/api/runtime-session.service";
+import { presentDashboardSnapshot } from "../../shared/lib/runtime-presenters";
 import {
   DashboardViewModel,
   RefreshReceiptViewModel,
@@ -84,6 +85,11 @@ type RefreshState =
                 @if (refreshError(); as err) {
                   <span class="tone-danger refresh-hint"
                     >Refresh failed: {{ err.message }}</span
+                  >
+                }
+                @if (runtimeRefreshError(); as err) {
+                  <span class="tone-warning refresh-hint"
+                    >Auto-refresh failed: {{ err.message }}</span
                   >
                 }
                 <button
@@ -477,12 +483,35 @@ type RefreshState =
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class DashboardPageComponent {
-  private readonly runtimeApi = inject(RuntimeApiService);
+  private readonly runtimeSession = inject(RuntimeSessionService);
   private readonly destroyRef = inject(DestroyRef);
+  private readonly runtimeState = this.runtimeSession.watchState(this.destroyRef);
 
-  readonly state = signal<DashboardState>({ kind: "loading" });
   readonly expandedIssues = signal(new Set<string>());
   readonly refreshState = signal<RefreshState>({ kind: "idle" });
+  readonly state = computed<DashboardState>(() => {
+    const loadState = this.runtimeState.loadState();
+    if (loadState.initialLoadPending && loadState.snapshot === null) {
+      return { kind: "loading" };
+    }
+    if (loadState.snapshot) {
+      return {
+        kind: "ready",
+        data: presentDashboardSnapshot(loadState.snapshot)
+      };
+    }
+    return {
+      kind: "error",
+      error:
+        loadState.error ??
+        ({
+          kind: "unexpected",
+          code: "unexpected",
+          message: "The dashboard could not load",
+          status: null
+        } satisfies RuntimeUiError)
+    };
+  });
   readonly dashboardData = computed(() => {
     const state = this.state();
     return state.kind === "ready" ? state.data : null;
@@ -499,26 +528,20 @@ export class DashboardPageComponent {
     const refreshState = this.refreshState();
     return refreshState.kind === "error" ? refreshState.error : null;
   });
+  readonly runtimeRefreshError = computed(() => {
+    const loadState = this.runtimeState.loadState();
+    return loadState.snapshot ? loadState.error : null;
+  });
 
-  constructor() {
-    this.load();
-  }
+  constructor() {}
 
   load(): void {
-    this.state.set({ kind: "loading" });
-    this.runtimeApi
-      .loadDashboard()
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (data) => this.state.set({ kind: "ready", data }),
-        error: (error: RuntimeUiError) =>
-          this.state.set({ kind: "error", error })
-      });
+    this.runtimeState.refresh();
   }
 
   requestRefresh(): void {
     this.refreshState.set({ kind: "pending" });
-    this.runtimeApi
+    this.runtimeSession
       .requestRefresh()
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe({

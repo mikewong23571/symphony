@@ -24,31 +24,40 @@ import {
 export class RuntimeApiService {
   private readonly http = inject(HttpClient);
 
+  loadStateSnapshot(): Observable<RuntimeStateApiResponse> {
+    return this.http
+      .get<RuntimeStateApiResponse>("/api/v1/state")
+      .pipe(catchError((error: unknown) => throwError(() => toRuntimeUiError(error))));
+  }
+
   loadDashboard(): Observable<DashboardViewModel> {
-    return this.http.get<RuntimeStateApiResponse>("/api/v1/state").pipe(
+    return this.loadStateSnapshot().pipe(
       map((response) => presentDashboardSnapshot(response)),
-      catchError((error: unknown) => throwError(() => toRuntimeUiError(error)))
     );
   }
 
   loadRuns(): Observable<RunsViewModel> {
-    return this.http.get<RuntimeStateApiResponse>("/api/v1/state").pipe(
+    return this.loadStateSnapshot().pipe(
       map((response) => presentRunsSnapshot(response)),
-      catchError((error: unknown) => throwError(() => toRuntimeUiError(error)))
     );
   }
 
-  loadIssue(issueIdentifier: string): Observable<IssueDetailViewModel> {
+  loadIssueSnapshot(issueIdentifier: string): Observable<RuntimeIssueApiResponse> {
     return this.http
       .get<RuntimeIssueApiResponse>(
         `/api/v1/${encodeURIComponent(issueIdentifier)}`
       )
       .pipe(
-        map((response) => presentIssueSnapshot(response)),
         catchError((error: unknown) =>
           throwError(() => toRuntimeUiError(error))
         )
       );
+  }
+
+  loadIssue(issueIdentifier: string): Observable<IssueDetailViewModel> {
+    return this.loadIssueSnapshot(issueIdentifier).pipe(
+      map((response) => presentIssueSnapshot(response))
+    );
   }
 
   requestRefresh(): Observable<RefreshReceiptViewModel> {

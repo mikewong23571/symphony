@@ -1,3 +1,9 @@
+export interface RuntimeSnapshotMetaApiResponse {
+  revision: number;
+  generated_at: string;
+  expires_at: string;
+}
+
 export interface RuntimeCountsApiResponse {
   running: number;
   retrying: number;
@@ -66,9 +72,7 @@ export interface RateLimitsApiResponse {
   [key: string]: unknown;
 }
 
-export interface RuntimeStateApiResponse {
-  generated_at: string;
-  expires_at: string;
+export interface RuntimeStateApiResponse extends RuntimeSnapshotMetaApiResponse {
   counts: RuntimeCountsApiResponse;
   running: RuntimeRunningEntryApiResponse[];
   retrying: RuntimeRetryEntryApiResponse[];
@@ -107,7 +111,7 @@ export interface RuntimeIssueRetryApiResponse {
   prior_session?: RuntimeRetryPriorSessionApiResponse | null;
 }
 
-export interface RuntimeIssueApiResponse {
+export interface RuntimeIssueApiResponse extends RuntimeSnapshotMetaApiResponse {
   issue_identifier: string;
   issue_id: string | null;
   status: "running" | "retrying";
@@ -130,6 +134,14 @@ export interface RuntimeRefreshApiResponse {
   coalesced: boolean;
   requested_at: string;
   operations: string[];
+}
+
+export interface RuntimeInvalidationEvent {
+  sequence: number;
+  event: string;
+  emitted_at: string;
+  revision?: number;
+  issue_identifiers?: string[];
 }
 
 export interface RuntimeApiErrorEnvelope {
@@ -239,4 +251,11 @@ export interface RefreshReceiptViewModel {
   queuedLabel: string;
   requestedAt: string;
   operationsLabel: string;
+}
+
+export interface RuntimeLoadState<TSnapshot> {
+  snapshot: TSnapshot | null;
+  error: RuntimeUiError | null;
+  initialLoadPending: boolean;
+  refreshPending: boolean;
 }
