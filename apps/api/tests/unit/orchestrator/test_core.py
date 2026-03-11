@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -11,8 +11,16 @@ from typing import Any, cast
 import pytest
 from symphony.agent_runner import AgentRuntimeEvent, AttemptResult
 from symphony.agent_runner.events import UsageSnapshot
+from symphony.observability.events import (
+    clear_runtime_invalidations,
+    wait_for_runtime_invalidation,
+)
 from symphony.observability.runtime import (
     RuntimeSnapshotUnavailableError,
+    clear_runtime_refresh_request_file,
+    clear_runtime_snapshot_file,
+    clear_runtime_snapshot_provider,
+    configure_runtime_observability,
     get_runtime_issue_snapshot,
     get_runtime_recovery_path,
     get_runtime_refresh_request_path,
@@ -28,6 +36,33 @@ from symphony.workflow import WorkflowRuntime
 from symphony.workflow.config import ServiceConfig, build_service_config
 from symphony.workflow.loader import WorkflowDefinition
 from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
+
+
+@pytest.fixture(autouse=True)
+def isolate_runtime_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[None, None, None]:
+    symphony_logger = logging.getLogger("symphony")
+    previous_propagate = symphony_logger.propagate
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_REFRESH_REQUEST_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_RECOVERY_PATH", raising=False)
+    monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS", raising=False)
+    symphony_logger.propagate = True
+    configure_runtime_observability()
+    clear_runtime_invalidations()
+    clear_runtime_snapshot_provider()
+    _clear_snapshot_file_best_effort()
+    _clear_refresh_request_file_best_effort()
+    _clear_recovery_file_best_effort()
+    yield
+    configure_runtime_observability()
+    clear_runtime_invalidations()
+    clear_runtime_snapshot_provider()
+    _clear_snapshot_file_best_effort()
+    _clear_refresh_request_file_best_effort()
+    _clear_recovery_file_best_effort()
+    symphony_logger.propagate = previous_propagate
 
 
 class FakeTrackerClient:
@@ -1641,6 +1676,73 @@ def test_orchestrator_refreshes_runtime_snapshot_immediately_after_dispatch(tmp_
     asyncio.run(run_test())
 
 
+def test_orchestrator_refreshes_runtime_revision_and_publishes_invalidations(
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    issue = build_issue(issue_id="issue-2", identifier="SYM-456")
+
+    async def pending_worker_runner() -> AttemptResult:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
+        worker_task: asyncio.Task[AttemptResult] | None = None
+        monitor_task: asyncio.Task[None] | None = None
+        try:
+            await orchestrator.startup()
+            initial_snapshot = orchestrator.get_runtime_snapshot()
+            assert initial_snapshot["revision"] == 1
+
+            clear_runtime_invalidations()
+            worker_task = asyncio.create_task(pending_worker_runner())
+            monitor_task = asyncio.create_task(asyncio.sleep(0))
+            orchestrator.state.running[issue.id] = RunningEntry(
+                issue=issue,
+                attempt=None,
+                worker_task=worker_task,
+                monitor_task=monitor_task,
+                workspace_path=tmp_path / "workspaces" / issue.identifier,
+                started_at=datetime.now(UTC),
+            )
+
+            orchestrator._refresh_runtime_snapshot()
+
+            refreshed_snapshot = orchestrator.get_runtime_snapshot()
+            assert refreshed_snapshot["revision"] == 2
+            assert refreshed_snapshot["counts"] == {"running": 1, "retrying": 0}
+            assert refreshed_snapshot["running"][0]["issue_identifier"] == issue.identifier
+
+            snapshot_event = wait_for_runtime_invalidation(
+                after_sequence=0,
+                timeout_seconds=0.1,
+            )
+            issue_event = wait_for_runtime_invalidation(
+                after_sequence=1,
+                timeout_seconds=0.1,
+            )
+
+            assert snapshot_event is not None
+            assert snapshot_event["event"] == "snapshot_updated"
+            assert snapshot_event["revision"] == 2
+            assert isinstance(snapshot_event["generated_at"], str)
+            assert isinstance(snapshot_event["expires_at"], str)
+
+            assert issue_event is not None
+            assert issue_event["event"] == "issue_changed"
+            assert issue_event["revision"] == 2
+            assert issue_event["issue_identifiers"] == [issue.identifier]
+        finally:
+            await orchestrator.aclose()
+            if worker_task is not None:
+                await asyncio.gather(worker_task, return_exceptions=True)
+            if monitor_task is not None:
+                await asyncio.gather(monitor_task, return_exceptions=True)
+
+    asyncio.run(run_test())
+
+
 def test_orchestrator_tolerates_runtime_snapshot_publish_failures(tmp_path: Path) -> None:
     config = build_config(tmp_path=tmp_path)
 
@@ -2281,3 +2383,21 @@ def test_orchestrator_wait_cycle_consumes_refresh_requests_early(tmp_path: Path)
             await orchestrator.aclose()
 
     asyncio.run(run_test())
+
+
+def _clear_snapshot_file_best_effort() -> None:
+    try:
+        clear_runtime_snapshot_file()
+    except RuntimeSnapshotUnavailableError:
+        pass
+
+
+def _clear_refresh_request_file_best_effort() -> None:
+    try:
+        clear_runtime_refresh_request_file()
+    except RuntimeSnapshotUnavailableError:
+        pass
+
+
+def _clear_recovery_file_best_effort() -> None:
+    get_runtime_recovery_path().unlink(missing_ok=True)

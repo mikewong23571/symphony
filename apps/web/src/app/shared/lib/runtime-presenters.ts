@@ -95,7 +95,7 @@ export function presentIssueSnapshot(
       : null,
     previousSession: snapshot.retry?.prior_session
       ? presentSessionSummary({
-          title: "Previous session",
+          title: "Last session",
           sessionId: snapshot.retry.prior_session.session_id,
           turnCount: snapshot.retry.prior_session.turn_count,
           lastEvent: snapshot.retry.prior_session.last_event,

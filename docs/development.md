@@ -97,6 +97,29 @@ Health check: `GET http://127.0.0.1:8000/healthz` → `{"status":"ok","service":
 
 The runtime sidecar also exposes the dashboard JSON endpoints under `/api/v1/*`.
 
+### Runtime refresh model
+
+- The Angular runtime views treat the REST snapshot endpoints as the canonical
+  source of truth: `GET /api/v1/state`, `GET /api/v1/<issue_identifier>`, and
+  `POST /api/v1/refresh`.
+- Snapshot freshness metadata (`generated_at`, `expires_at`, `revision`) drives
+  automatic revalidation in the browser. The shared frontend runtime session
+  service schedules the next poll from `expires_at` instead of using a fixed
+  interval.
+- The browser also revalidates immediately when the page regains focus or
+  becomes visible again, so background tabs do not stay stale until the next
+  scheduled poll.
+- `GET /api/v1/events` is an optional SSE invalidation stream. Events are
+  lightweight signals such as `snapshot_updated`, `issue_changed`, and
+  `refresh_queued`; the browser reacts by fetching the canonical REST snapshot
+  again rather than trusting streamed state payloads.
+- The current runtime HTTP sidecar is a threaded WSGI server. Each connected
+  SSE client occupies one server thread for the life of the stream, so this
+  path is intended for a small number of internal operator sessions rather than
+  high fan-out traffic.
+- The invalidation broker is process-local in memory. SSE clients must connect
+  to the same runtime sidecar process that is publishing snapshot updates.
+
 ### Angular Frontend
 
 ```sh

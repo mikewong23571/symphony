@@ -15,9 +15,14 @@ import { MatProgressBarModule } from "@angular/material/progress-bar";
 import { MatIconModule } from "@angular/material/icon";
 import { MatDividerModule } from "@angular/material/divider";
 
-import { RuntimeApiService } from "../../shared/api/runtime-api.service";
+import {
+  RuntimeResourceConnection,
+  RuntimeSessionService
+} from "../../shared/api/runtime-session.service";
+import { presentIssueSnapshot } from "../../shared/lib/runtime-presenters";
 import {
   IssueDetailViewModel,
+  RuntimeIssueApiResponse,
   RuntimeUiError
 } from "../../shared/lib/runtime-types";
 import { EmptyStateComponent } from "../../shared/ui/empty-state.component";
@@ -51,6 +56,11 @@ type IssueState =
             <mat-icon>arrow_back</mat-icon> Back to dashboard
           </a>
           <h2 class="detail-title">{{ issueIdentifier() }}</h2>
+          @if (runtimeRefreshError(); as error) {
+            <p class="tone-warning detail-warning">
+              Auto-refresh failed: {{ error.message }}
+            </p>
+          }
         </div>
         <span class="section-eyebrow tone-accent">Issue detail</span>
       </div>
@@ -80,7 +90,6 @@ type IssueState =
             <mat-card appearance="outlined">
               <mat-card-content>
                 <div class="identity-header">
-                  <h3 class="identity-title">{{ detail.identifier }}</h3>
                   <mat-chip-set>
                     <mat-chip class="chip-accent" disableRipple>{{
                       detail.statusLabel
@@ -116,9 +125,6 @@ type IssueState =
             <!-- Sessions grid -->
             <div class="sessions-grid">
               <mat-card appearance="outlined">
-                <mat-card-header>
-                  <mat-card-subtitle>Current session</mat-card-subtitle>
-                </mat-card-header>
                 <mat-card-content>
                   @if (detail.currentSession; as s) {
                     <app-session-summary [session]="s" />
@@ -129,9 +135,6 @@ type IssueState =
               </mat-card>
 
               <mat-card appearance="outlined">
-                <mat-card-header>
-                  <mat-card-subtitle>Last session summary</mat-card-subtitle>
-                </mat-card-header>
                 <mat-card-content>
                   @if (detail.previousSession; as s) {
                     <app-session-summary [session]="s" />
@@ -145,10 +148,7 @@ type IssueState =
             <!-- Events card -->
             <mat-card appearance="outlined">
               <mat-card-header>
-                <mat-card-subtitle>Recent events</mat-card-subtitle>
-                <mat-card-title>Recent activity</mat-card-title>
-                <span class="spacer"></span>
-                <a mat-button routerLink="/">Return to dashboard</a>
+                <mat-card-title>Recent events</mat-card-title>
               </mat-card-header>
               <mat-divider />
               <mat-card-content>
@@ -204,6 +204,10 @@ type IssueState =
         font-weight: 600;
         margin: 0.25rem 0 0 0.5rem;
       }
+      .detail-warning {
+        margin: 0.5rem 0 0 0.5rem;
+        font-size: 0.875rem;
+      }
       .section-eyebrow {
         font-size: 0.75rem;
         text-transform: uppercase;
@@ -218,11 +222,7 @@ type IssueState =
         gap: 0.75rem;
         margin-bottom: 1rem;
       }
-      .identity-title {
-        font-size: 1.875rem;
-        font-weight: 600;
-        margin: 0;
-      }
+
       .detail-grid {
         display: grid;
         gap: 1rem 2rem;
@@ -262,9 +262,7 @@ type IssueState =
       }
 
       /* Events */
-      .spacer {
-        flex: 1;
-      }
+
       .event-item {
         padding: 1rem 0;
       }
@@ -288,11 +286,44 @@ type IssueState =
 })
 export class IssueDetailPageComponent {
   private readonly route = inject(ActivatedRoute);
-  private readonly runtimeApi = inject(RuntimeApiService);
+  private readonly runtimeSession = inject(RuntimeSessionService);
   private readonly destroyRef = inject(DestroyRef);
+  private currentIssueResource: RuntimeResourceConnection<RuntimeIssueApiResponse> | null =
+    null;
 
-  readonly state = signal<IssueState>({ kind: "loading" });
   readonly issueIdentifier = signal("unknown");
+  readonly issueResource = signal<RuntimeResourceConnection<RuntimeIssueApiResponse> | null>(
+    null
+  );
+  readonly issueLoadState = computed(() => this.issueResource()?.loadState() ?? {
+    snapshot: null,
+    error: null,
+    initialLoadPending: true,
+    refreshPending: false
+  });
+  readonly state = computed<IssueState>(() => {
+    const loadState = this.issueLoadState();
+    if (loadState.initialLoadPending && loadState.snapshot === null) {
+      return { kind: "loading" };
+    }
+    if (loadState.snapshot) {
+      return {
+        kind: "ready",
+        data: presentIssueSnapshot(loadState.snapshot)
+      };
+    }
+    return {
+      kind: "error",
+      error:
+        loadState.error ??
+        ({
+          kind: "unexpected",
+          code: "unexpected",
+          message: "Issue detail failed to load",
+          status: null
+        } satisfies RuntimeUiError)
+    };
+  });
   readonly issueDetail = computed(() => {
     const state = this.state();
     return state.kind === "ready" ? state.data : null;
@@ -301,27 +332,29 @@ export class IssueDetailPageComponent {
     const state = this.state();
     return state.kind === "error" ? state.error : null;
   });
+  readonly runtimeRefreshError = computed(() => {
+    const loadState = this.issueLoadState();
+    return loadState.snapshot ? loadState.error : null;
+  });
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.currentIssueResource?.destroy());
     this.route.paramMap
       .pipe(takeUntilDestroyed(this.destroyRef))
       .subscribe((params) => {
         const identifier = params.get("id") ?? "unknown";
         this.issueIdentifier.set(identifier);
-        this.load(identifier);
+        this.currentIssueResource?.destroy();
+        this.currentIssueResource = this.runtimeSession.connectIssue(identifier);
+        this.issueResource.set(this.currentIssueResource);
       });
   }
 
   load(issueIdentifier: string): void {
-    this.state.set({ kind: "loading" });
-    this.runtimeApi
-      .loadIssue(issueIdentifier)
-      .pipe(takeUntilDestroyed(this.destroyRef))
-      .subscribe({
-        next: (data) => this.state.set({ kind: "ready", data }),
-        error: (error: RuntimeUiError) =>
-          this.state.set({ kind: "error", error })
-      });
+    if (issueIdentifier !== this.issueIdentifier()) {
+      this.issueIdentifier.set(issueIdentifier);
+    }
+    this.currentIssueResource?.refresh();
   }
 
   errorEyebrow(error: RuntimeUiError): string {
