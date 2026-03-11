@@ -12,6 +12,13 @@ from symphony.common.types import ServiceInfo
 
 HANDSHAKE_REQUEST_COUNT = 3
 FIRST_RUNTIME_REQUEST_ID = HANDSHAKE_REQUEST_COUNT + 1
+APP_SERVER_STREAM_READ_LIMIT_BYTES = 1_048_576
+_LEGACY_SANDBOX_POLICY_TYPES = {
+    "danger-full-access": "dangerFullAccess",
+    "external-sandbox": "externalSandbox",
+    "read-only": "readOnly",
+    "workspace-write": "workspaceWrite",
+}
 
 
 class AppServerError(Exception):
@@ -96,6 +103,7 @@ async def start_app_server_session(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=APP_SERVER_STREAM_READ_LIMIT_BYTES,
         )
     except OSError as exc:
         raise AppServerStartupError("Could not start the Codex app-server subprocess.") from exc
@@ -177,7 +185,7 @@ async def start_app_server_session(
                     "cwd": str(workspace_cwd),
                     "title": title,
                     "approvalPolicy": approval_policy,
-                    "sandboxPolicy": dict(turn_sandbox_policy),
+                    "sandboxPolicy": _normalize_sandbox_policy(turn_sandbox_policy),
                 },
             },
         )
@@ -246,7 +254,7 @@ async def start_next_turn(
                 "cwd": str(cwd.resolve()),
                 "title": title,
                 "approvalPolicy": approval_policy,
-                "sandboxPolicy": dict(sandbox_policy),
+                "sandboxPolicy": _normalize_sandbox_policy(sandbox_policy),
             },
         },
     )
@@ -277,11 +285,14 @@ async def read_protocol_message(
         raise AppServerStartupError("App-server stdout is not available.")
 
     if timeout_seconds is None:
-        line = await session.process.stdout.readline()
+        line = await _read_jsonl_line(session.process.stdout)
     else:
         # The streaming runner interprets raw TimeoutError as a turn/stall deadline, unlike the
         # handshake path, which wraps request/response timeouts in AppServerResponseTimeoutError.
-        line = await asyncio.wait_for(session.process.stdout.readline(), timeout=timeout_seconds)
+        line = await asyncio.wait_for(
+            _read_jsonl_line(session.process.stdout),
+            timeout=timeout_seconds,
+        )
 
     if not line:
         raise AppServerProtocolError("App-server closed stdout before the turn completed.")
@@ -322,7 +333,10 @@ async def _wait_for_response(
             )
 
         try:
-            line = await asyncio.wait_for(process.stdout.readline(), timeout=remaining)
+            line = await asyncio.wait_for(
+                _read_jsonl_line(process.stdout),
+                timeout=remaining,
+            )
         except TimeoutError as exc:
             raise AppServerResponseTimeoutError(
                 f"Timed out waiting for app-server response id {expected_id}."
@@ -342,9 +356,7 @@ async def _wait_for_response(
 
         error = message.get("error")
         if error is not None:
-            raise AppServerProtocolError(
-                f"App-server returned an error for request id {expected_id}."
-            )
+            raise AppServerProtocolError(_format_response_error(expected_id, error))
 
         result = message.get("result")
         if not isinstance(result, Mapping):
@@ -367,6 +379,30 @@ def _decode_message(line: bytes) -> Mapping[str, Any]:
     return message
 
 
+async def _read_jsonl_line(reader: asyncio.StreamReader) -> bytes:
+    chunks = bytearray()
+
+    while True:
+        try:
+            chunk = await reader.readuntil(b"\n")
+        except asyncio.IncompleteReadError as exc:
+            if not exc.partial:
+                return b""
+            raise AppServerProtocolError(
+                "App-server closed stdout in the middle of a JSONL message."
+            ) from exc
+        except asyncio.LimitOverrunError as exc:
+            if exc.consumed <= 0:
+                raise AppServerProtocolError(
+                    "App-server emitted an oversized stdout message before a newline separator."
+                ) from exc
+            chunks.extend(await reader.readexactly(exc.consumed))
+            continue
+
+        chunks.extend(chunk)
+        return bytes(chunks)
+
+
 def _extract_required_id(result: Mapping[str, Any], *, outer_key: str) -> str:
     nested = result.get(outer_key)
     if not isinstance(nested, Mapping):
@@ -377,6 +413,32 @@ def _extract_required_id(result: Mapping[str, Any], *, outer_key: str) -> str:
         raise AppServerProtocolError(f"App-server response is missing result.{outer_key}.id.")
 
     return identifier
+
+
+def _normalize_sandbox_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = dict(policy)
+    sandbox_type = normalized.get("type")
+    if isinstance(sandbox_type, str):
+        stripped = sandbox_type.strip()
+        normalized["type"] = _LEGACY_SANDBOX_POLICY_TYPES.get(stripped, stripped)
+    return normalized
+
+
+def _format_response_error(expected_id: int, error: object) -> str:
+    prefix = f"App-server returned an error for request id {expected_id}"
+    if not isinstance(error, Mapping):
+        return prefix + "."
+
+    code = error.get("code")
+    message = error.get("message")
+    details: list[str] = []
+    if code is not None:
+        details.append(f"code={code}")
+    if isinstance(message, str) and message.strip():
+        details.append(message.strip())
+    if not details:
+        return prefix + "."
+    return prefix + ": " + "; ".join(details)
 
 
 async def _drain_stderr(

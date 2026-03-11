@@ -65,10 +65,10 @@ describe("runtime presenters", () => {
     expect(result.activeIssues[0]?.identifier).toBe("SYM-1");
     expect(result.retryQueue[0]?.priorSessionLabel).toBe("thread-9-turn-1");
     expect(result.rateLimits[0]?.value).toBe("7");
-    expect(result.statCards[4]).toEqual(
+    expect(result.statCards).toHaveLength(4);
+    expect(result.snapshotStatus).toEqual(
       expect.objectContaining({
-        label: "Workflow status",
-        value: "Snapshot live"
+        label: "Snapshot live"
       })
     );
   });
@@ -178,6 +178,161 @@ describe("runtime presenters", () => {
     const result = presentIssueSnapshot(snapshot);
 
     expect(result.attemptSummary).toBe("Initial run; no retry has been scheduled.");
+  });
+
+  describe("rate limits presenter", () => {
+    function makeSnapshot(
+      rate_limits: RuntimeStateApiResponse["rate_limits"]
+    ): ReturnType<typeof presentDashboardSnapshot> {
+      return presentDashboardSnapshot({
+        generated_at: "2099-03-10T10:00:00Z",
+        expires_at: "2099-03-10T10:05:00Z",
+        counts: { running: 0, retrying: 0 },
+        running: [],
+        retrying: [],
+        codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
+        rate_limits
+      });
+    }
+
+    it("returns empty array when rate_limits is null", () => {
+      expect(makeSnapshot(null).rateLimits).toHaveLength(0);
+      expect(makeSnapshot(null).rateLimitsRawJson).toBeNull();
+    });
+
+    it("renders limitName as a stat card", () => {
+      const { rateLimits } = makeSnapshot({ limitName: "GPT-5.3-Codex-Spark" });
+      const card = rateLimits.find((c) => c.label === "limit name");
+      expect(card?.value).toBe("GPT-5.3-Codex-Spark");
+    });
+
+    it("renders primary window with usage percent and duration label", () => {
+      const { rateLimits } = makeSnapshot({
+        primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: null }
+      });
+      const card = rateLimits.find((c) => c.label === "primary window (5h)");
+      expect(card?.value).toBe("42% used");
+    });
+
+    it("renders secondary window with usage percent and duration label", () => {
+      const { rateLimits } = makeSnapshot({
+        secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: null }
+      });
+      const card = rateLimits.find((c) => c.label === "secondary window (7d)");
+      expect(card?.value).toBe("10% used");
+    });
+
+    it("renders credits as None when hasCredits is false and balance is null", () => {
+      const { rateLimits } = makeSnapshot({
+        credits: { balance: null, hasCredits: false, unlimited: false }
+      });
+      expect(rateLimits.find((c) => c.label === "credits")?.value).toBe("None");
+    });
+
+    it("renders credits as Unlimited when unlimited is true", () => {
+      const { rateLimits } = makeSnapshot({
+        credits: { balance: null, hasCredits: true, unlimited: true }
+      });
+      expect(rateLimits.find((c) => c.label === "credits")?.value).toBe("Unlimited");
+    });
+
+    it("renders credits balance as formatted number", () => {
+      const { rateLimits } = makeSnapshot({
+        credits: { balance: 5000, hasCredits: true, unlimited: false }
+      });
+      expect(rateLimits.find((c) => c.label === "credits")?.value).toBe("5,000");
+    });
+
+    it("never produces [object Object] for nested fields", () => {
+      const { rateLimits } = makeSnapshot({
+        primary: { usedPercent: 2, windowDurationMins: 300, resetsAt: 1773208408 },
+        secondary: { usedPercent: 31, windowDurationMins: 10080, resetsAt: 1773632680 },
+        credits: { balance: null, hasCredits: false, unlimited: false }
+      });
+      for (const card of rateLimits) {
+        expect(card.value).not.toContain("[object Object]");
+      }
+    });
+
+    it("falls back to flat scalar fields not in the known set", () => {
+      const { rateLimits } = makeSnapshot({ requests_remaining: 7 });
+      expect(rateLimits.find((c) => c.label === "requests remaining")?.value).toBe("7");
+    });
+
+    it("skips unknown nested objects in fallback path", () => {
+      const { rateLimits } = makeSnapshot({ someObj: { nested: true } } as RuntimeStateApiResponse["rate_limits"]);
+      const bad = rateLimits.find((c) => c.value.includes("[object Object]"));
+      expect(bad).toBeUndefined();
+    });
+
+    it("populates rateLimitsRawJson with formatted JSON string", () => {
+      const { rateLimitsRawJson } = makeSnapshot({ limitName: "Test", primary: { usedPercent: 5, windowDurationMins: 60, resetsAt: null } });
+      expect(rateLimitsRawJson).not.toBeNull();
+      expect(() => JSON.parse(rateLimitsRawJson!)).not.toThrow();
+      expect(JSON.parse(rateLimitsRawJson!)).toMatchObject({ limitName: "Test" });
+    });
+  });
+
+  describe("running row presenter", () => {
+    it("populates lastMessageRaw from last_message", () => {
+      const raw = JSON.stringify({ method: "item/started", params: { threadId: "abc" } });
+      const result = presentDashboardSnapshot({
+        generated_at: "2099-03-10T10:00:00Z",
+        expires_at: "2099-03-10T10:05:00Z",
+        counts: { running: 1, retrying: 0 },
+        running: [
+          {
+            issue_id: "issue-1",
+            issue_identifier: "SYM-1",
+            attempt: null,
+            state: "running",
+            session_id: "s1",
+            turn_count: 1,
+            last_event: "item/started",
+            last_message: raw,
+            started_at: "2099-03-10T10:00:00Z",
+            last_event_at: "2099-03-10T10:00:00Z",
+            workspace_path: "/tmp/SYM-1",
+            tokens: null
+          }
+        ],
+        retrying: [],
+        codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
+        rate_limits: null
+      });
+
+      expect(result.activeIssues[0]?.lastMessageRaw).toBe(raw);
+      expect(result.activeIssues[0]?.lastEvent).toBe("item/started");
+    });
+
+    it("sets lastMessageRaw to empty string when last_message is null", () => {
+      const result = presentDashboardSnapshot({
+        generated_at: "2099-03-10T10:00:00Z",
+        expires_at: "2099-03-10T10:05:00Z",
+        counts: { running: 1, retrying: 0 },
+        running: [
+          {
+            issue_id: "issue-1",
+            issue_identifier: "SYM-1",
+            attempt: null,
+            state: "running",
+            session_id: null,
+            turn_count: null,
+            last_event: null,
+            last_message: null,
+            started_at: null,
+            last_event_at: null,
+            workspace_path: null,
+            tokens: null
+          }
+        ],
+        retrying: [],
+        codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0 },
+        rate_limits: null
+      });
+
+      expect(result.activeIssues[0]?.lastMessageRaw).toBe("");
+    });
   });
 
   it("presents refresh receipts and freshness states", () => {

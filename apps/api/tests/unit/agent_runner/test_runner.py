@@ -36,6 +36,31 @@ def test_stream_turn_completes_and_emits_runtime_events(tmp_path: Path) -> None:
     asyncio.run(run_test())
 
 
+def test_stream_turn_handles_huge_single_line_notifications(tmp_path: Path) -> None:
+    async def run_test() -> None:
+        events: list[AgentRuntimeEvent] = []
+        session = await start_fake_app_server_session(
+            tmp_path,
+            log_path=tmp_path / "messages.jsonl",
+            mode="huge_stream_success",
+        )
+        try:
+            result = await stream_turn(
+                session,
+                approval_policy="never",
+                turn_timeout_ms=1_000,
+                stall_timeout_ms=1_000,
+                on_event=lambda event: collect_events(events, event),
+            )
+        finally:
+            await session.aclose()
+
+        assert result.outcome == "completed"
+        assert [event.event for event in events] == ["notification", "turn_completed"]
+
+    asyncio.run(run_test())
+
+
 def test_stream_turn_maps_failed_terminal_events(tmp_path: Path) -> None:
     async def run_test() -> None:
         events: list[AgentRuntimeEvent] = []

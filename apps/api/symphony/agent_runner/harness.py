@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -431,9 +431,26 @@ def _resolve_thread_sandbox(config: ServiceConfig) -> str:
     return config.codex.thread_sandbox or "workspace-write"
 
 
-def _resolve_turn_sandbox_policy(config: ServiceConfig) -> dict[str, str]:
-    sandbox_type = config.codex.turn_sandbox_policy or _resolve_thread_sandbox(config)
-    return {"type": sandbox_type}
+_LEGACY_SANDBOX_POLICY_TYPES = {
+    "danger-full-access": "dangerFullAccess",
+    "external-sandbox": "externalSandbox",
+    "read-only": "readOnly",
+    "workspace-write": "workspaceWrite",
+}
+
+
+def _resolve_turn_sandbox_policy(config: ServiceConfig) -> dict[str, object]:
+    policy = config.codex.turn_sandbox_policy or {"type": _resolve_thread_sandbox(config)}
+    return _normalize_turn_sandbox_policy(policy)
+
+
+def _normalize_turn_sandbox_policy(policy: Mapping[str, object]) -> dict[str, object]:
+    normalized = dict(policy)
+    sandbox_type = normalized.get("type")
+    if isinstance(sandbox_type, str):
+        stripped = sandbox_type.strip()
+        normalized["type"] = _LEGACY_SANDBOX_POLICY_TYPES.get(stripped, stripped)
+    return normalized
 
 
 def _build_turn_title(issue: Issue) -> str:

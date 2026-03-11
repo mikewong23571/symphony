@@ -122,3 +122,39 @@ def test_extract_usage_snapshot_accepts_explicit_event_name_override() -> None:
     assert usage.output_tokens == 5
     assert usage.total_tokens == 15
     assert usage.is_absolute_total is True
+
+
+def test_extract_usage_snapshot_reads_token_count_event_via_info_wrapper() -> None:
+    # Codex app server sends: {"type": "token_count", "info": {"total_token_usage": {...}}}
+    # No "method" field. total_token_usage inside info must be treated as an absolute total.
+    usage = extract_usage_snapshot(
+        {
+            "type": "token_count",
+            "info": {
+                "total_token_usage": {
+                    "input_tokens": 17561,
+                    "cached_input_tokens": 3456,
+                    "output_tokens": 431,
+                    "reasoning_output_tokens": 184,
+                    "total_tokens": 17992,
+                },
+                "last_token_usage": {
+                    "input_tokens": 17561,
+                    "output_tokens": 431,
+                    "total_tokens": 17992,
+                },
+                "model_context_window": 258400,
+            },
+        }
+    )
+
+    assert usage is not None
+    assert usage.input_tokens == 17561
+    assert usage.output_tokens == 431
+    assert usage.total_tokens == 17992
+    assert usage.is_absolute_total is True
+
+
+def test_extract_usage_snapshot_token_count_with_null_info_returns_none() -> None:
+    usage = extract_usage_snapshot({"type": "token_count", "info": None})
+    assert usage is None

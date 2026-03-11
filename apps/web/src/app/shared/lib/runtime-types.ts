@@ -44,6 +44,28 @@ export interface RuntimeRetryEntryApiResponse {
   prior_session?: RuntimeRetryPriorSessionApiResponse | null;
 }
 
+export interface RateLimitWindowApiResponse {
+  resetsAt: number | null;
+  usedPercent: number | null;
+  windowDurationMins: number | null;
+}
+
+export interface RateLimitCreditsApiResponse {
+  balance: number | null;
+  hasCredits: boolean | null;
+  unlimited: boolean | null;
+}
+
+export interface RateLimitsApiResponse {
+  limitId?: string | null;
+  limitName?: string | null;
+  planType?: string | null;
+  credits?: RateLimitCreditsApiResponse | null;
+  primary?: RateLimitWindowApiResponse | null;
+  secondary?: RateLimitWindowApiResponse | null;
+  [key: string]: unknown;
+}
+
 export interface RuntimeStateApiResponse {
   generated_at: string;
   expires_at: string;
@@ -53,7 +75,7 @@ export interface RuntimeStateApiResponse {
   codex_totals: RuntimeTokensApiResponse & {
     seconds_running: number;
   };
-  rate_limits: Record<string, string | number | boolean | null> | null;
+  rate_limits: RateLimitsApiResponse | null;
 }
 
 export interface RuntimeIssueAttemptsApiResponse {
@@ -150,6 +172,7 @@ export interface RuntimeActivityRowViewModel {
   session: string;
   lastEvent: string;
   lastMessage: string;
+  lastMessageRaw: string;
   startedAt: string;
   updatedAt: string;
   workspacePath: string;
@@ -175,6 +198,7 @@ export interface DashboardViewModel {
   activeIssues: RuntimeActivityRowViewModel[];
   retryQueue: RuntimeRetryRowViewModel[];
   rateLimits: RuntimeStatCardViewModel[];
+  rateLimitsRawJson: string | null;
   hasActivity: boolean;
 }
 

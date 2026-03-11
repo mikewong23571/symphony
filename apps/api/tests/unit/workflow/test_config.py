@@ -151,6 +151,34 @@ def test_build_service_config_parses_states_and_agent_limits() -> None:
     assert config.agent.max_concurrent_agents_by_state == {"todo": 2, "blocked": 3}
 
 
+def test_build_service_config_preserves_turn_sandbox_policy_mapping() -> None:
+    config = build_service_config(
+        build_definition(
+            {
+                "codex": {
+                    "turn_sandbox_policy": {
+                        "type": "workspaceWrite",
+                        "networkAccess": True,
+                    }
+                }
+            }
+        )
+    )
+
+    assert config.codex.turn_sandbox_policy == {
+        "type": "workspaceWrite",
+        "networkAccess": True,
+    }
+
+
+def test_build_service_config_coerces_string_turn_sandbox_policy_to_mapping() -> None:
+    config = build_service_config(
+        build_definition({"codex": {"turn_sandbox_policy": "workspace-write"}})
+    )
+
+    assert config.codex.turn_sandbox_policy == {"type": "workspace-write"}
+
+
 def test_build_service_config_parses_optional_server_port() -> None:
     config = build_service_config(build_definition({"server": {"port": "0"}}))
 

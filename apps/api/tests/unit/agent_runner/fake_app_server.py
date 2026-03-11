@@ -72,6 +72,17 @@ def perform_handshake() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any],
     if mode == "missing_turn_id":
         send({"id": turn_start["id"], "result": {"turn": {}}})
         raise SystemExit(0)
+    if mode == "turn_start_error":
+        send(
+            {
+                "id": turn_start["id"],
+                "error": {
+                    "code": -32600,
+                    "message": "sandbox policy rejected",
+                },
+            }
+        )
+        raise SystemExit(0)
 
     if mode == "interleaved":
         send({"method": "item/started", "params": {"item": {"id": "itm_1"}}})
@@ -104,6 +115,11 @@ if mode in {"success", "interleaved", "stderr", "thread_started_notice"}:
 
 if mode == "stream_success":
     send({"method": "item/started", "params": {"item": {"id": "itm_1"}}})
+    send_turn_completed("turn_1")
+    raise SystemExit(0)
+
+if mode == "huge_stream_success":
+    send({"method": "item/started", "params": {"blob": "x" * 1_200_000}})
     send_turn_completed("turn_1")
     raise SystemExit(0)
 

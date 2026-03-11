@@ -46,6 +46,7 @@ def test_start_app_server_session_completes_handshake_and_returns_ids(tmp_path: 
     assert logged_messages[2]["params"]["cwd"] == str(tmp_path.resolve())
     assert logged_messages[3]["params"]["threadId"] == "thr_123"
     assert logged_messages[3]["params"]["title"] == "SYM-123: Handshake"
+    assert logged_messages[3]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
 
 
 def test_start_app_server_session_ignores_interleaved_notifications(tmp_path: Path) -> None:
@@ -70,6 +71,20 @@ def test_start_app_server_session_rejects_missing_nested_ids(
 ) -> None:
     with pytest.raises(AppServerProtocolError, match="missing result"):
         asyncio.run(run_handshake(tmp_path, log_path=tmp_path / "messages.jsonl", mode=mode))
+
+
+def test_start_app_server_session_surfaces_response_error_details(tmp_path: Path) -> None:
+    with pytest.raises(
+        AppServerProtocolError,
+        match=r"request id 3: code=-32600; sandbox policy rejected",
+    ):
+        asyncio.run(
+            run_handshake(
+                tmp_path,
+                log_path=tmp_path / "messages.jsonl",
+                mode="turn_start_error",
+            )
+        )
 
 
 def test_start_app_server_session_times_out_waiting_for_response(tmp_path: Path) -> None:

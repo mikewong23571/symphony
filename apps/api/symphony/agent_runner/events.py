@@ -141,7 +141,7 @@ def _extract_named_usage_payload(
 ) -> Mapping[str, Any] | None:
     payload_candidates: list[Mapping[str, Any]] = [message]
 
-    for container_key in ("params", "result"):
+    for container_key in ("params", "result", "info"):
         nested = message.get(container_key)
         if isinstance(nested, Mapping):
             payload_candidates.append(nested)
