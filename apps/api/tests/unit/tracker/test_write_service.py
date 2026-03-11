@@ -23,6 +23,7 @@ from symphony.tracker.write_service import (
     TrackerMutationService,
     build_tracker_mutation_service,
 )
+from symphony.workflow import MissingTrackerWorkspaceSlugError, UnsupportedTrackerKindError
 from symphony.workflow.config import build_service_config
 from symphony.workflow.loader import WorkflowDefinition
 
@@ -161,6 +162,55 @@ def test_build_tracker_mutation_service_uses_factory(
 
     assert service.backend is backend
     assert service.project_slug == "symphony"
+
+
+def test_build_tracker_mutation_service_rejects_valid_plane_config_with_typed_error() -> None:
+    config = build_service_config(
+        WorkflowDefinition(
+            config={
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "api_key": "plane-token",
+                    "workspace_slug": "workspace",
+                    "project_id": "project-123",
+                },
+                "codex": {"command": "codex app-server"},
+            },
+            prompt_template="Prompt body",
+        ),
+        env={},
+    )
+
+    with pytest.raises(
+        UnsupportedTrackerKindError,
+        match="tracker.kind must be set to the supported tracker kind 'linear'.",
+    ):
+        build_tracker_mutation_service(config)
+
+
+def test_build_tracker_mutation_service_surfaces_plane_field_errors() -> None:
+    config = build_service_config(
+        WorkflowDefinition(
+            config={
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "api_key": "plane-token",
+                    "project_id": "project-123",
+                },
+                "codex": {"command": "codex app-server"},
+            },
+            prompt_template="Prompt body",
+        ),
+        env={},
+    )
+
+    with pytest.raises(
+        MissingTrackerWorkspaceSlugError,
+        match="tracker.workspace_slug is required when tracker.kind is 'plane'.",
+    ):
+        build_tracker_mutation_service(config)
 
 
 def test_transition_issue_returns_noop_for_redundant_target_state(
