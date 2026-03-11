@@ -125,6 +125,8 @@ def test_run_issue_attempt_reuses_thread_for_continuation_turns(tmp_path: Path) 
     ]
     assert logged_messages[4]["method"] == "turn/start"
     assert logged_messages[4]["params"]["threadId"] == "thr_123"
+    assert logged_messages[3]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
+    assert logged_messages[4]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
     assert (
         "Continue working in the existing thread"
         in logged_messages[4]["params"]["input"][0]["text"]

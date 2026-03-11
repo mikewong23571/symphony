@@ -110,7 +110,7 @@ class CodexConfig:
     command: str
     approval_policy: str | None
     thread_sandbox: str | None
-    turn_sandbox_policy: str | None
+    turn_sandbox_policy: Mapping[str, Any] | None
     turn_timeout_ms: int
     read_timeout_ms: int
     stall_timeout_ms: int
@@ -227,7 +227,9 @@ def build_service_config(
             command=_resolve_codex_command(codex_section),
             approval_policy=_clean_string(codex_section.get("approval_policy")),
             thread_sandbox=_clean_string(codex_section.get("thread_sandbox")),
-            turn_sandbox_policy=_clean_string(codex_section.get("turn_sandbox_policy")),
+            turn_sandbox_policy=_coerce_turn_sandbox_policy(
+                codex_section.get("turn_sandbox_policy")
+            ),
             turn_timeout_ms=_coerce_int(
                 codex_section.get("turn_timeout_ms"),
                 default=DEFAULT_TURN_TIMEOUT_MS,
@@ -404,6 +406,27 @@ def _resolve_codex_command(codex_section: Mapping[str, Any]) -> str:
         return ""
 
     return raw_value.strip()
+
+
+def _coerce_turn_sandbox_policy(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return {"type": normalized}
+
+    if isinstance(value, Mapping):
+        normalized_policy: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            normalized_key = key.strip()
+            if not normalized_key:
+                continue
+            normalized_policy[normalized_key] = item
+        return normalized_policy or None
+
+    return None
 
 
 def _coerce_state_limits(value: Any) -> dict[str, int]:
