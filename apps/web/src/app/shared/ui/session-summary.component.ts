@@ -4,24 +4,36 @@ import {
   computed,
   input
 } from "@angular/core";
+import { MatListModule } from "@angular/material/list";
 import { IssueSessionSummaryViewModel } from "../lib/runtime-types";
 
 @Component({
   selector: "app-session-summary",
   standalone: true,
+  imports: [MatListModule],
   template: `
-    <h3 class="mt-token-2 text-2xl font-semibold">{{ session().title }}</h3>
-    <dl class="mt-token-4 space-y-token-3 text-sm">
+    <h3 class="session-title">{{ session().title }}</h3>
+    <mat-list>
       @for (row of rows(); track row.label) {
-        <div class="flex items-start justify-between gap-token-4">
-          <dt class="text-muted">{{ row.label }}</dt>
-          <dd class="text-right font-mono font-medium text-fg">
-            {{ row.value }}
-          </dd>
-        </div>
+        <mat-list-item>
+          <span matListItemTitle class="tone-muted">{{ row.label }}</span>
+          <span matListItemLine class="val-mono">{{ row.value }}</span>
+        </mat-list-item>
       }
-    </dl>
+    </mat-list>
   `,
+  styles: [
+    `
+      .session-title {
+        font-size: 1.5rem;
+        font-weight: 600;
+        margin: 0.5rem 0 0;
+      }
+      mat-list {
+        padding: 0;
+      }
+    `
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class SessionSummaryComponent {

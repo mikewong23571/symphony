@@ -1,0 +1,46 @@
+@use './theme';
+
+// Google Fonts — Material Icons + IBM Plex
+@import url('https://fonts.googleapis.com/icon?family=Material+Icons');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background: #f4f2ea;
+  color: #1f1b16;
+}
+
+body { min-height: 100vh; }
+code { font-family: "IBM Plex Mono", "SFMono-Regular", monospace; }
+
+// Shared helper classes for semantic status colors
+.tone-danger   { color: #a83222; }
+.tone-warning  { color: #8a6520; }
+.tone-positive { color: #3d6b4f; }
+.tone-muted    { color: #6e6558; }
+.tone-accent   { color: #b5532d; }
+
+// Chip color variants for status badges
+.chip-positive { background: rgba(61,107,79,0.10)  !important; color: #3d6b4f !important; }
+.chip-warning  { background: rgba(138,101,32,0.10) !important; color: #8a6520 !important; }
+.chip-accent   { background: rgba(181,83,45,0.10)  !important; color: #b5532d !important; }
+.chip-neutral  { background: transparent !important; color: #6e6558 !important;
+                 border: 1px solid #d7d0c3 !important; }
+
+// Clickable card affordance
+.card-link {
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+  transition: transform 220ms cubic-bezier(0.2,0,0,1);
+  &:hover { transform: translateY(-2px); }
+}
+
+// Monospace data values
+.val-mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.875rem;
+}

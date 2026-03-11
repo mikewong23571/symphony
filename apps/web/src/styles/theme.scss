@@ -1,0 +1,53 @@
+@use '@angular/material' as mat;
+
+html {
+  @include mat.theme((
+    color: (
+      primary: mat.$orange-palette,
+      theme-type: light,
+    ),
+    typography: (
+      brand-family: "'IBM Plex Sans', 'Segoe UI', sans-serif",
+      plain-family: "'IBM Plex Sans', 'Segoe UI', sans-serif",
+      bold-weight: 600,
+      medium-weight: 500,
+      regular-weight: 400,
+    ),
+    density: 0,
+  ));
+
+  & {
+    // Override M3 system tokens with warm earthy palette
+    --mat-sys-primary: #b5532d;
+    --mat-sys-on-primary: #ffffff;
+    --mat-sys-primary-container: rgba(181, 83, 45, 0.12);
+    --mat-sys-on-primary-container: #1f1b16;
+    --mat-sys-surface: #fffcf6;
+    --mat-sys-on-surface: #1f1b16;
+    --mat-sys-surface-container: #f4f2ea;
+    --mat-sys-surface-container-low: #fffcf6;
+    --mat-sys-surface-container-high: #ede8de;
+    --mat-sys-background: #f4f2ea;
+    --mat-sys-on-background: #1f1b16;
+    --mat-sys-outline: #d7d0c3;
+    --mat-sys-outline-variant: #d7d0c3;
+    --mat-sys-error: #a83222;
+    --mat-sys-on-error: #ffffff;
+    --mat-sys-secondary: #6e6558;
+    --mat-sys-on-secondary: #ffffff;
+
+    // Toolbar
+    --mat-toolbar-container-background-color: #fffcf6;
+    --mat-toolbar-container-text-color: #1f1b16;
+
+    // Cards
+    --mdc-elevated-card-container-color: #fffcf6;
+    --mdc-outlined-card-container-color: #fffcf6;
+    --mdc-outlined-card-outline-color: #d7d0c3;
+
+    // Tabs
+    --mat-tab-header-active-indicator-color: #b5532d;
+    --mat-tab-header-active-label-text-color: #1f1b16;
+    --mat-tab-header-inactive-label-text-color: #6e6558;
+  }
+}

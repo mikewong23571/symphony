@@ -6,9 +6,14 @@ import {
   inject,
   signal
 } from "@angular/core";
-import { CommonModule } from "@angular/common";
 import { RouterLink } from "@angular/router";
 import { takeUntilDestroyed } from "@angular/core/rxjs-interop";
+import { MatCardModule } from "@angular/material/card";
+import { MatButtonModule } from "@angular/material/button";
+import { MatChipsModule } from "@angular/material/chips";
+import { MatProgressBarModule } from "@angular/material/progress-bar";
+import { MatIconModule } from "@angular/material/icon";
+import { MatRippleModule } from "@angular/material/core";
 
 import { RuntimeApiService } from "../../shared/api/runtime-api.service";
 import {
@@ -34,274 +39,340 @@ type RefreshState =
 @Component({
   selector: "app-dashboard-page",
   standalone: true,
-  imports: [CommonModule, RouterLink, EmptyStateComponent],
+  imports: [
+    RouterLink,
+    EmptyStateComponent,
+    MatCardModule,
+    MatButtonModule,
+    MatChipsModule,
+    MatProgressBarModule,
+    MatIconModule,
+    MatRippleModule
+  ],
   template: `
-    <div class="space-y-token-5">
+    <div class="dashboard">
       @if (state().kind === "loading") {
-        <p class="py-token-8 text-center text-sm text-muted">
-          Loading snapshot...
-        </p>
+        <mat-progress-bar mode="indeterminate" />
       } @else {
         @if (dashboardError(); as error) {
-          <section
-            class="overflow-hidden rounded-panel border border-line border-l-4 border-l-danger bg-danger-subtle shadow-panel"
-          >
-            <div class="p-token-6">
-              <p
-                class="text-sm uppercase tracking-ui"
-                [class]="errorToneClass(error)"
-              >
-                {{ errorEyebrow(error) }}
-              </p>
-              <h3 class="mt-token-2 text-2xl font-semibold">
-                {{ errorTitle(error) }}
-              </h3>
-              <p class="mt-token-3 max-w-2xl text-muted">
-                {{ error.message }}
-              </p>
-              <button
-                type="button"
-                (click)="load()"
-                class="mt-token-4 rounded border border-line px-token-3 py-token-1 text-sm text-muted transition-colors duration-fast ease-standard hover:border-accent hover:text-fg"
-              >
-                Retry
-              </button>
-            </div>
-          </section>
+          <mat-card appearance="outlined" class="error-card">
+            <mat-card-header>
+              <mat-card-subtitle [class]="errorToneClass(error)">{{
+                errorEyebrow(error)
+              }}</mat-card-subtitle>
+              <mat-card-title>{{ errorTitle(error) }}</mat-card-title>
+            </mat-card-header>
+            <mat-card-content>
+              <p class="tone-muted">{{ error.message }}</p>
+            </mat-card-content>
+            <mat-card-actions>
+              <button mat-stroked-button (click)="load()">Retry</button>
+            </mat-card-actions>
+          </mat-card>
         } @else {
           @if (dashboardData(); as data) {
             <!-- Snapshot panel -->
-            <div
-              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
-            >
-              <div
-                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
-              >
-                <p class="text-xs uppercase tracking-ui text-muted">Snapshot</p>
-                <div class="flex items-center gap-token-3">
-                  @if (refreshReceipt(); as receipt) {
-                    <span class="text-xs text-muted">{{
-                      receipt.queuedLabel
-                    }}</span>
-                  }
-                  @if (refreshError(); as err) {
-                    <span class="text-xs text-danger"
-                      >Refresh failed: {{ err.message }}</span
-                    >
-                  }
-                  <button
-                    type="button"
-                    (click)="requestRefresh()"
-                    [disabled]="refreshState().kind === 'pending'"
-                    class="rounded border border-line px-token-3 py-token-1 text-xs text-muted transition-colors duration-fast ease-standard hover:border-accent hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
+            <mat-card appearance="outlined">
+              <mat-card-header>
+                <mat-card-subtitle>Snapshot</mat-card-subtitle>
+                <span class="spacer"></span>
+                @if (refreshReceipt(); as receipt) {
+                  <span class="tone-muted refresh-hint">{{
+                    receipt.queuedLabel
+                  }}</span>
+                }
+                @if (refreshError(); as err) {
+                  <span class="tone-danger refresh-hint"
+                    >Refresh failed: {{ err.message }}</span
                   >
-                    {{
-                      refreshState().kind === "pending"
-                        ? "Refreshing…"
-                        : "Refresh"
-                    }}
-                  </button>
-                </div>
-              </div>
-
-              <div
-                class="flex flex-wrap divide-x divide-line border-b border-line"
-              >
+                }
+                <button
+                  mat-stroked-button
+                  (click)="requestRefresh()"
+                  [disabled]="refreshState().kind === 'pending'"
+                >
+                  {{
+                    refreshState().kind === "pending"
+                      ? "Refreshing…"
+                      : "Refresh"
+                  }}
+                </button>
+              </mat-card-header>
+              <mat-card-content class="stat-grid">
                 @for (card of data.statCards; track card.label) {
-                  <div class="min-w-[7rem] flex-1 px-token-5 py-token-4">
-                    <p
-                      class="text-2xl font-semibold tabular-nums"
-                      [class]="statToneClass(card)"
-                    >
+                  <div class="stat-cell">
+                    <p class="stat-value" [class]="statToneClass(card)">
                       {{ card.value }}
                     </p>
-                    <p class="mt-token-1 text-xs text-muted">
-                      {{ card.label }}
-                    </p>
+                    <p class="stat-label tone-muted">{{ card.label }}</p>
                   </div>
                 }
-              </div>
-
-              <div
-                class="flex flex-wrap items-center gap-x-token-4 gap-y-token-1 px-token-5 py-token-3"
-              >
-                <span
-                  class="text-sm font-medium"
-                  [class]="snapshotToneClass(data.snapshotStatus)"
-                  >{{ data.snapshotStatus.label }}</span
-                >
-                <span class="text-xs text-muted">{{
-                  data.snapshotStatus.detail
-                }}</span>
-              </div>
-            </div>
+              </mat-card-content>
+              <mat-card-footer class="snapshot-status">
+                <span [class]="snapshotToneClass(data.snapshotStatus)">
+                  {{ data.snapshotStatus.label }}
+                </span>
+                <span class="tone-muted">{{ data.snapshotStatus.detail }}</span>
+              </mat-card-footer>
+            </mat-card>
 
             <!-- Active issues panel -->
-            <div
-              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
-            >
-              <div
-                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
-              >
-                <p class="text-xs uppercase tracking-ui text-muted">
-                  Active issues
-                </p>
+            <mat-card appearance="outlined">
+              <mat-card-header>
+                <mat-card-subtitle>Active issues</mat-card-subtitle>
                 @if (data.activeIssues.length > 0) {
-                  <span class="text-xs font-medium text-positive">
-                    {{ data.activeIssues.length }} running
-                  </span>
+                  <mat-chip-set>
+                    <mat-chip class="chip-positive" disableRipple>
+                      {{ data.activeIssues.length }} running
+                    </mat-chip>
+                  </mat-chip-set>
                 }
-              </div>
-
-              <div class="p-token-5">
+              </mat-card-header>
+              <mat-card-content>
                 @if (data.activeIssues.length === 0) {
                   <app-empty-state
                     title="No active issues"
                     description="No issues are currently running."
                   />
                 } @else {
-                  <div class="space-y-token-3">
+                  <div class="issue-list">
                     @for (issue of data.activeIssues; track issue.identifier) {
-                      <a
+                      <mat-card
+                        appearance="outlined"
+                        matRipple
+                        class="card-link issue-card"
                         [routerLink]="['/issues', issue.identifier]"
-                        class="block rounded-panel border border-line bg-bg/70 p-token-4 transition-transform duration-base ease-standard hover:-translate-y-0.5 hover:border-accent"
                       >
-                        <div class="flex flex-wrap items-center gap-token-2">
-                          <span class="text-base font-semibold">{{
-                            issue.identifier
-                          }}</span>
-                          <span
-                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui"
-                            [class]="stateBadgeClass(issue.state)"
-                            >{{ issue.state }}</span
-                          >
-                          <span
-                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui"
-                            [class]="attemptBadgeClass(issue.attemptLabel)"
-                            >{{ issue.attemptLabel }}</span
-                          >
-                        </div>
-                        <p class="mt-token-2 text-sm text-muted">
-                          {{ issue.lastEvent }} · {{ issue.lastMessage }}
-                        </p>
-                        <div
-                          class="mt-token-3 grid gap-x-token-6 gap-y-token-1 text-sm text-muted sm:grid-cols-2"
-                        >
-                          <p>
-                            <span class="font-medium text-fg">Session</span>
-                            {{ issue.session }}
+                        <mat-card-content>
+                          <div class="issue-header">
+                            <span class="issue-id">{{ issue.identifier }}</span>
+                            <mat-chip-set>
+                              <mat-chip
+                                [class]="stateBadgeClass(issue.state)"
+                                disableRipple
+                              >
+                                {{ issue.state }}
+                              </mat-chip>
+                              <mat-chip
+                                [class]="attemptBadgeClass(issue.attemptLabel)"
+                                disableRipple
+                              >
+                                {{ issue.attemptLabel }}
+                              </mat-chip>
+                            </mat-chip-set>
+                          </div>
+                          <p class="issue-summary tone-muted">
+                            {{ issue.lastEvent }} · {{ issue.lastMessage }}
                           </p>
-                          <p>
-                            <span class="font-medium text-fg">Started</span>
-                            {{ issue.startedAt }}
-                          </p>
-                          <p>
-                            <span class="font-medium text-fg">Tokens</span>
-                            {{ issue.tokenSummary }}
-                          </p>
-                          <p>
-                            <span class="font-medium text-fg">Workspace</span>
-                            {{ issue.workspacePath }}
-                          </p>
-                        </div>
-                      </a>
+                          <div class="issue-meta">
+                            <p><strong>Session</strong> {{ issue.session }}</p>
+                            <p>
+                              <strong>Started</strong> {{ issue.startedAt }}
+                            </p>
+                            <p>
+                              <strong>Tokens</strong> {{ issue.tokenSummary }}
+                            </p>
+                            <p>
+                              <strong>Workspace</strong>
+                              {{ issue.workspacePath }}
+                            </p>
+                          </div>
+                        </mat-card-content>
+                      </mat-card>
                     }
                   </div>
                 }
-              </div>
-            </div>
+              </mat-card-content>
+            </mat-card>
 
             <!-- Retry queue panel -->
-            <div
-              class="overflow-hidden rounded-panel border border-line bg-surface shadow-panel"
-            >
-              <div
-                class="flex items-center justify-between border-b border-line px-token-5 py-token-3"
-              >
-                <p class="text-xs uppercase tracking-ui text-muted">
-                  Retry queue
-                </p>
+            <mat-card appearance="outlined">
+              <mat-card-header>
+                <mat-card-subtitle>Retry queue</mat-card-subtitle>
                 @if (data.retryQueue.length > 0) {
-                  <span class="text-xs font-medium text-warning">
-                    {{ data.retryQueue.length }} queued
-                  </span>
+                  <mat-chip-set>
+                    <mat-chip class="chip-warning" disableRipple>
+                      {{ data.retryQueue.length }} queued
+                    </mat-chip>
+                  </mat-chip-set>
                 }
-              </div>
-
-              <div class="p-token-5">
+              </mat-card-header>
+              <mat-card-content>
                 @if (data.retryQueue.length === 0) {
                   <app-empty-state
                     title="No retries waiting"
                     description="When a retry is scheduled, it will appear here."
                   />
                 } @else {
-                  <div class="space-y-token-3">
+                  <div class="issue-list">
                     @for (retry of data.retryQueue; track retry.identifier) {
-                      <a
+                      <mat-card
+                        appearance="outlined"
+                        matRipple
+                        class="card-link issue-card"
                         [routerLink]="['/issues', retry.identifier]"
-                        class="block rounded-panel border border-line bg-bg/70 p-token-4 transition-transform duration-base ease-standard hover:-translate-y-0.5 hover:border-accent"
                       >
-                        <div class="flex flex-wrap items-center gap-token-2">
-                          <span class="text-base font-semibold">{{
-                            retry.identifier
-                          }}</span>
-                          <span
-                            class="rounded px-token-2 py-0.5 text-xs uppercase tracking-ui bg-warning-subtle text-warning"
-                            >{{ retry.attemptLabel }}</span
-                          >
-                        </div>
-                        <div
-                          class="mt-token-2 grid gap-x-token-6 gap-y-token-1 text-sm text-muted sm:grid-cols-2"
-                        >
-                          <p>
-                            <span class="font-medium text-fg">Due</span>
-                            {{ retry.dueAt }}
-                          </p>
-                          <p>
-                            <span class="font-medium text-fg">Error</span>
-                            {{ retry.error }}
-                          </p>
-                          <p class="sm:col-span-2">
-                            <span class="font-medium text-fg">Workspace</span>
-                            {{ retry.workspacePath }}
-                          </p>
-                        </div>
-                      </a>
+                        <mat-card-content>
+                          <div class="issue-header">
+                            <span class="issue-id">{{ retry.identifier }}</span>
+                            <mat-chip-set>
+                              <mat-chip class="chip-warning" disableRipple>
+                                {{ retry.attemptLabel }}
+                              </mat-chip>
+                            </mat-chip-set>
+                          </div>
+                          <div class="issue-meta">
+                            <p><strong>Due</strong> {{ retry.dueAt }}</p>
+                            <p><strong>Error</strong> {{ retry.error }}</p>
+                            <p class="meta-full">
+                              <strong>Workspace</strong>
+                              {{ retry.workspacePath }}
+                            </p>
+                          </div>
+                        </mat-card-content>
+                      </mat-card>
                     }
                   </div>
                 }
-              </div>
-            </div>
+              </mat-card-content>
+            </mat-card>
 
             <!-- Rate limits -->
             @if (data.rateLimits.length > 0) {
-              <section>
-                <p class="text-xs uppercase tracking-ui text-muted">
-                  Rate limits
-                </p>
-                <div
-                  class="mt-token-3 grid gap-token-4 sm:grid-cols-2 lg:grid-cols-3"
-                >
-                  @for (entry of data.rateLimits; track entry.label) {
-                    <div
-                      class="rounded-panel border border-line bg-surface p-token-4 shadow-panel"
-                    >
-                      <p class="text-xs capitalize text-muted">
-                        {{ entry.label }}
-                      </p>
-                      <p class="mt-token-2 text-lg font-semibold text-fg">
-                        {{ entry.value }}
-                      </p>
-                    </div>
-                  }
-                </div>
-              </section>
+              <div class="section-label tone-muted">Rate limits</div>
+              <div class="rate-grid">
+                @for (entry of data.rateLimits; track entry.label) {
+                  <mat-card appearance="outlined" class="rate-card">
+                    <mat-card-content>
+                      <p class="rate-label tone-muted">{{ entry.label }}</p>
+                      <p class="rate-value">{{ entry.value }}</p>
+                    </mat-card-content>
+                  </mat-card>
+                }
+              </div>
             }
           }
         }
       }
     </div>
   `,
+  styles: [
+    `
+      .dashboard {
+        display: flex;
+        flex-direction: column;
+        gap: 1.25rem;
+      }
+
+      .spacer {
+        flex: 1;
+      }
+      .refresh-hint {
+        font-size: 0.75rem;
+      }
+
+      /* Snapshot stats */
+      .stat-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0;
+        padding: 0;
+      }
+      .stat-cell {
+        flex: 1;
+        min-width: 7rem;
+        padding: 1rem 1.25rem;
+        border-right: 1px solid #d7d0c3;
+      }
+      .stat-cell:last-child {
+        border-right: none;
+      }
+      .stat-value {
+        font-size: 1.5rem;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        margin: 0;
+      }
+      .stat-label {
+        font-size: 0.75rem;
+        margin: 0.25rem 0 0;
+      }
+
+      .snapshot-status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 1rem;
+        padding: 0.75rem 1.25rem;
+        align-items: center;
+        font-size: 0.875rem;
+      }
+
+      /* Issue cards */
+      .issue-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+      .issue-card {
+        margin: 0;
+      }
+      .issue-header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.5rem;
+      }
+      .issue-id {
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .issue-summary {
+        font-size: 0.875rem;
+        margin: 0.5rem 0 0;
+      }
+      .issue-meta {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.25rem 1.5rem;
+        font-size: 0.875rem;
+        color: #6e6558;
+        margin-top: 0.75rem;
+      }
+      .issue-meta p {
+        margin: 0;
+      }
+      .issue-meta strong {
+        color: #1f1b16;
+        font-weight: 500;
+        margin-right: 0.25rem;
+      }
+      .meta-full {
+        grid-column: 1 / -1;
+      }
+
+      /* Rate limits */
+      .section-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.18em;
+      }
+      .rate-grid {
+        display: grid;
+        gap: 1rem;
+        grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr));
+      }
+      .rate-label {
+        font-size: 0.75rem;
+        text-transform: capitalize;
+        margin: 0;
+      }
+      .rate-value {
+        font-size: 1.125rem;
+        font-weight: 600;
+        margin: 0.5rem 0 0;
+      }
+    `
+  ],
   changeDetection: ChangeDetectionStrategy.OnPush
 })
 export class DashboardPageComponent {
@@ -359,20 +430,22 @@ export class DashboardPageComponent {
   }
 
   statToneClass(card: RuntimeStatCardViewModel): string {
-    if (card.label === "Running" && card.value !== "0") return "text-positive";
-    if (card.label === "Retrying" && card.value !== "0") return "text-warning";
-    return "text-fg";
+    if (card.label === "Running" && card.value !== "0")
+      return "stat-value tone-positive";
+    if (card.label === "Retrying" && card.value !== "0")
+      return "stat-value tone-warning";
+    return "stat-value";
   }
 
   stateBadgeClass(state: string): string {
-    if (state === "running") return "bg-positive-subtle text-positive";
-    if (state === "retrying") return "bg-warning-subtle text-warning";
-    return "border border-line text-muted";
+    if (state === "running") return "chip-positive";
+    if (state === "retrying") return "chip-warning";
+    return "chip-neutral";
   }
 
   attemptBadgeClass(label: string): string {
-    if (label.startsWith("Retry")) return "bg-warning-subtle text-warning";
-    return "bg-accent-subtle text-accent";
+    if (label.startsWith("Retry")) return "chip-warning";
+    return "chip-accent";
   }
 
   errorEyebrow(error: RuntimeUiError): string {
@@ -403,13 +476,13 @@ export class DashboardPageComponent {
 
   errorToneClass(error: RuntimeUiError): string {
     if (error.kind === "stale" || error.kind === "timeout")
-      return "text-warning";
-    return "text-danger";
+      return "tone-warning";
+    return "tone-danger";
   }
 
   snapshotToneClass(status: SnapshotStatusViewModel): string {
-    if (status.tone === "warning") return "text-warning";
-    if (status.tone === "danger") return "text-danger";
-    return "text-muted";
+    if (status.tone === "warning") return "tone-warning";
+    if (status.tone === "danger") return "tone-danger";
+    return "tone-muted";
   }
 }
