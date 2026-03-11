@@ -159,6 +159,7 @@ def test_tracker_pull_request_endpoint_handles_repeated_posts_safely(
 ) -> None:
     class IdempotentIssueLinkBackend:
         def __init__(self) -> None:
+            self.project_ref: str | None = "symphony"
             self.issue_links: dict[tuple[str, str], TrackerIssueLink] = {}
 
         def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
@@ -260,6 +261,7 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
 ) -> None:
     class IssueLinkBackend:
         def __init__(self) -> None:
+            self.project_ref: str | None = "symphony"
             self.issue_link_calls = 0
 
         def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:

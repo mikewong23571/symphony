@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import pytest
 from symphony.tracker import (
     LinearTrackerClient,
+    TrackerRequestFailedError,
     build_tracker_mutation_backend,
     build_tracker_read_client,
 )
@@ -37,6 +39,17 @@ def test_build_tracker_mutation_backend_returns_linear_adapter() -> None:
     backend = build_tracker_mutation_backend(make_service_config())
 
     assert isinstance(backend, LinearTrackerClient)
+    assert backend.project_ref == "symphony"
+
+
+def test_build_tracker_mutation_backend_normalizes_linear_request_errors() -> None:
+    backend = build_tracker_mutation_backend(make_service_config())
+
+    assert isinstance(backend, LinearTrackerClient)
+    backend.transport = lambda **_: (_ for _ in ()).throw(OSError("boom"))
+
+    with pytest.raises(TrackerRequestFailedError, match="Linear API request failed."):
+        backend.create_comment("issue-123", "Ready for review")
 
 
 def test_build_tracker_read_client_rejects_valid_plane_config_with_typed_error() -> None:

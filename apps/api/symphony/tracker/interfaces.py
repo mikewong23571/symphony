@@ -22,6 +22,9 @@ class TrackerReadClient(Protocol):
 
 
 class _TrackerMutationBackendBase(Protocol):
+    @property
+    def project_ref(self) -> str | None: ...
+
     def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None: ...
 
     def list_workflow_states(self) -> list[TrackerWorkflowState]: ...
