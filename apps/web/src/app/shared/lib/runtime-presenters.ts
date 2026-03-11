@@ -37,6 +37,9 @@ export function presentDashboardSnapshot(
     activeIssues: snapshot.running.map(presentRunningRow),
     retryQueue: snapshot.retrying.map(presentRetryRow),
     rateLimits: presentRateLimits(snapshot.rate_limits),
+    rateLimitsRawJson: snapshot.rate_limits
+      ? JSON.stringify(snapshot.rate_limits, null, 2)
+      : null,
     hasActivity: snapshot.running.length > 0 || snapshot.retrying.length > 0
   };
 }
@@ -160,11 +163,100 @@ function presentRateLimits(
 ): RuntimeStatCardViewModel[] {
   if (!rateLimits) return [];
 
-  return Object.entries(rateLimits).map(([key, value]) => ({
-    label: key.replaceAll("_", " "),
-    value: typeof value === "number" ? formatInteger(value) : String(value),
-    detail: ""
-  }));
+  const cards: RuntimeStatCardViewModel[] = [];
+
+  if (rateLimits.limitName) {
+    cards.push({
+      label: "limit name",
+      value: String(rateLimits.limitName),
+      detail: ""
+    });
+  }
+
+  if (rateLimits.planType) {
+    cards.push({
+      label: "plan type",
+      value: String(rateLimits.planType),
+      detail: ""
+    });
+  }
+
+  if (rateLimits.primary && typeof rateLimits.primary === "object") {
+    const p = rateLimits.primary;
+    const duration = formatWindowMins(p.windowDurationMins);
+    const resetsAt =
+      p.resetsAt != null
+        ? formatTimestamp(new Date(p.resetsAt * 1000).toISOString())
+        : "";
+    cards.push({
+      label: duration ? `primary window (${duration})` : "primary window",
+      value: p.usedPercent != null ? `${p.usedPercent}% used` : "—",
+      detail: resetsAt ? `Resets ${resetsAt}` : ""
+    });
+  }
+
+  if (rateLimits.secondary && typeof rateLimits.secondary === "object") {
+    const s = rateLimits.secondary;
+    const duration = formatWindowMins(s.windowDurationMins);
+    const resetsAt =
+      s.resetsAt != null
+        ? formatTimestamp(new Date(s.resetsAt * 1000).toISOString())
+        : "";
+    cards.push({
+      label: duration ? `secondary window (${duration})` : "secondary window",
+      value: s.usedPercent != null ? `${s.usedPercent}% used` : "—",
+      detail: resetsAt ? `Resets ${resetsAt}` : ""
+    });
+  }
+
+  if (rateLimits.credits && typeof rateLimits.credits === "object") {
+    const c = rateLimits.credits;
+    let creditValue: string;
+    if (c.unlimited) {
+      creditValue = "Unlimited";
+    } else if (c.balance != null) {
+      creditValue = formatInteger(c.balance);
+    } else if (c.hasCredits === false) {
+      creditValue = "None";
+    } else {
+      creditValue = "—";
+    }
+    cards.push({ label: "credits", value: creditValue, detail: "" });
+  }
+
+  // Fallback: any additional flat scalar fields not already handled
+  const handled = new Set([
+    "credits",
+    "limitId",
+    "limitName",
+    "planType",
+    "primary",
+    "secondary"
+  ]);
+  for (const [key, value] of Object.entries(rateLimits)) {
+    if (
+      handled.has(key) ||
+      value === null ||
+      value === undefined ||
+      typeof value === "object"
+    )
+      continue;
+    cards.push({
+      label: key.replaceAll("_", " "),
+      value: typeof value === "number" ? formatInteger(value) : String(value),
+      detail: ""
+    });
+  }
+
+  return cards;
+}
+
+function formatWindowMins(mins: number | null | undefined): string {
+  if (mins == null) return "";
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
 }
 
 function presentRunningRow(

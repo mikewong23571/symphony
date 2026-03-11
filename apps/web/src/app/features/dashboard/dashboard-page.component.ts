@@ -119,14 +119,16 @@ type RefreshState =
             <!-- Active issues panel -->
             <mat-card appearance="outlined">
               <mat-card-header>
-                <mat-card-subtitle>Active issues</mat-card-subtitle>
-                @if (data.activeIssues.length > 0) {
-                  <mat-chip-set>
-                    <mat-chip class="chip-positive" disableRipple>
-                      {{ data.activeIssues.length }} running
-                    </mat-chip>
-                  </mat-chip-set>
-                }
+                <div class="panel-header">
+                  <mat-card-subtitle>Active issues</mat-card-subtitle>
+                  @if (data.activeIssues.length > 0) {
+                    <mat-chip-set>
+                      <mat-chip class="chip-positive" disableRipple>
+                        {{ data.activeIssues.length }} running
+                      </mat-chip>
+                    </mat-chip-set>
+                  }
+                </div>
               </mat-card-header>
               <mat-card-content>
                 @if (data.activeIssues.length === 0) {
@@ -188,14 +190,16 @@ type RefreshState =
             <!-- Retry queue panel -->
             <mat-card appearance="outlined">
               <mat-card-header>
-                <mat-card-subtitle>Retry queue</mat-card-subtitle>
-                @if (data.retryQueue.length > 0) {
-                  <mat-chip-set>
-                    <mat-chip class="chip-warning" disableRipple>
-                      {{ data.retryQueue.length }} queued
-                    </mat-chip>
-                  </mat-chip-set>
-                }
+                <div class="panel-header">
+                  <mat-card-subtitle>Retry queue</mat-card-subtitle>
+                  @if (data.retryQueue.length > 0) {
+                    <mat-chip-set>
+                      <mat-chip class="chip-warning" disableRipple>
+                        {{ data.retryQueue.length }} queued
+                      </mat-chip>
+                    </mat-chip-set>
+                  }
+                </div>
               </mat-card-header>
               <mat-card-content>
                 @if (data.retryQueue.length === 0) {
@@ -238,18 +242,30 @@ type RefreshState =
             </mat-card>
 
             <!-- Rate limits -->
-            @if (data.rateLimits.length > 0) {
+            @if (data.rateLimits.length > 0 || data.rateLimitsRawJson) {
               <div class="section-label tone-muted">Rate limits</div>
-              <div class="rate-grid">
-                @for (entry of data.rateLimits; track entry.label) {
-                  <mat-card appearance="outlined" class="rate-card">
-                    <mat-card-content>
-                      <p class="rate-label tone-muted">{{ entry.label }}</p>
-                      <p class="rate-value">{{ entry.value }}</p>
-                    </mat-card-content>
-                  </mat-card>
-                }
-              </div>
+              @if (data.rateLimits.length > 0) {
+                <div class="rate-grid">
+                  @for (entry of data.rateLimits; track entry.label) {
+                    <mat-card appearance="outlined" class="rate-card">
+                      <mat-card-content>
+                        <p class="rate-label tone-muted">{{ entry.label }}</p>
+                        <p class="rate-value">{{ entry.value }}</p>
+                      </mat-card-content>
+                    </mat-card>
+                  }
+                </div>
+              }
+              @if (data.rateLimitsRawJson) {
+                <details class="rate-raw">
+                  <summary class="rate-raw-summary tone-muted">
+                    Raw data
+                  </summary>
+                  <pre class="rate-raw-content">{{
+                    data.rateLimitsRawJson
+                  }}</pre>
+                </details>
+              }
             }
           }
         }
@@ -267,10 +283,14 @@ type RefreshState =
       .spacer {
         flex: 1;
       }
+      .panel-header {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+      }
       .refresh-hint {
         font-size: 0.75rem;
       }
-
       /* Snapshot stats */
       .stat-grid {
         display: flex;
@@ -370,6 +390,31 @@ type RefreshState =
         font-size: 1.125rem;
         font-weight: 600;
         margin: 0.5rem 0 0;
+      }
+
+      .rate-raw {
+        border: 1px solid #d7d0c3;
+        border-radius: 4px;
+        padding: 0;
+        overflow: hidden;
+      }
+      .rate-raw-summary {
+        cursor: pointer;
+        font-size: 0.75rem;
+        padding: 0.5rem 0.75rem;
+        user-select: none;
+      }
+      .rate-raw-summary:hover {
+        background: #f5f0e8;
+      }
+      .rate-raw-content {
+        margin: 0;
+        padding: 0.75rem 1rem;
+        font-size: 0.75rem;
+        line-height: 1.5;
+        overflow-x: auto;
+        border-top: 1px solid #d7d0c3;
+        background: #faf7f2;
       }
     `
   ],
