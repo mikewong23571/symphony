@@ -1,234 +1,55 @@
 # Symphony
 
-Symphony is a coding-agent orchestration service with a Django backend, an
-`asyncio`-driven orchestrator process, and an Angular + Tailwind CSS dashboard.
-The repository includes a local Django API server, a routed Angular dashboard,
-and a long-running orchestrator management command that loads repo-owned
-workflow configuration from `WORKFLOW.md`.
+Symphony is a coding-agent orchestration service with a Django backend,
+an `asyncio`-driven orchestrator, and an Angular Material dashboard.
 
-## Repository Layout
+## Repository layout
 
-- `apps/api`: Django project, management commands, backend packages, and tests
-- `apps/web`: Angular application and shared design tokens
-- `docs`: product specification, execution plan, and ADR placeholders
-- `.github/workflows`: CI workflow for backend and frontend validation
+```
+apps/api/        Django project, management commands, backend packages, tests
+apps/web/        Angular application (standalone components, Angular Material)
+docs/            Product spec, ADRs, development guide
+examples/        Sample workflow and runtime files
+scripts/         Dev and CI shell scripts
+.github/         CI workflow
+```
 
 ## Prerequisites
 
-- Python 3.12
-- `uv`
-- Node.js 20 or newer
-- `pnpm` 10.6.0
+- Python 3.12 + [`uv`](https://docs.astral.sh/uv/)
+- Node.js 20+ + [`pnpm`](https://pnpm.io/) 10.6.0
 
-## Initial Setup
-
-1. Sync Python dependencies:
-
-   ```sh
-   uv sync
-   ```
-
-2. Install frontend dependencies:
-
-   ```sh
-   pnpm install
-   ```
-
-3. Export the environment variables you need from `.env.example`.
-
-   ```sh
-   export DJANGO_SETTINGS_MODULE=config.settings.local
-   export DJANGO_ALLOWED_HOSTS='*'
-   export LINEAR_API_KEY=...
-   ```
-
-4. If you want to run the orchestrator, create a repository-local `WORKFLOW.md`
-   or pass an explicit workflow path to the management command. The orchestrator
-   will fail to start if the workflow file is missing.
-
-## Common Commands
-
-- Install Python dependencies: `make sync`
-- Install frontend dependencies: `make install-web`
-- Run the unified dev environment: `make dev`
-- Run all lint checks: `make lint`
-- Run all type checks: `make typecheck`
-- Run all tests: `make test`
-- Run pre-commit checks: `make precommit-run`
-
-## Local Development
-
-### Unified Dev Server
-
-Start Django and Angular together from the repository root:
+## Setup
 
 ```sh
-make dev
+uv sync        # Python dependencies
+pnpm install   # Node dependencies
 ```
 
-This entrypoint uses `hivemind` with [`Procfile.dev`](Procfile.dev) and
-[`./scripts/dev/start.sh`](./scripts/dev/start.sh).
+Copy `.env.example` to `.env.local` and fill in `DJANGO_SETTINGS_MODULE`,
+`LINEAR_API_KEY`, and any other required values before starting services.
 
-`make dev` starts three processes together:
+## Development
 
-- `api`: Django dev server on `API_PORT` for regular API routes
-- `runtime`: orchestrator plus its runtime HTTP sidecar on `RUNTIME_PORT`
-- `web`: Angular dev server on `WEB_PORT`
+| Command | Description |
+|---|---|
+| `make dev` | Start Django, orchestrator, and Angular together |
+| `make dev-api` | Django only |
+| `make dev-web` | Angular only |
 
-Before startup, `./scripts/dev/start.sh` prepares `./.runtime/dev/`, copies
-[`examples/WORKFLOW.dev.md`](examples/WORKFLOW.dev.md) to
-`./.runtime/dev/WORKFLOW.md`, and exports the runtime path env vars so Django
-and the orchestrator share the same workflow/snapshot/recovery files.
+## Quality
 
-When present, `./scripts/dev/start.sh` also loads `.env` and then `.env.local`.
-Explicit environment variables passed to `make dev` still take precedence over
-those files, and script defaults only fill in values that remain unset.
+| Command | Description |
+|---|---|
+| `make lint` | Lint all |
+| `make typecheck` | Typecheck all |
+| `make test` | Test all |
+| `make precommit-run` | Run all pre-commit checks |
 
-The default `local` mode binds:
+## Documentation
 
-- Django on `127.0.0.1:8000`
-- Runtime on `127.0.0.1:9000`
-- Angular on `127.0.0.1:4200`
-
-Expose both servers on all interfaces for LAN testing:
-
-```sh
-make dev DEV_MODE=lan
-```
-
-Mode behavior:
-
-- `DEV_MODE=local`: Django and Angular listen on `127.0.0.1`
-- `DEV_MODE=lan`: Django, runtime, and Angular listen on `0.0.0.0`
-- Angular still proxies `/api/*` to `http://127.0.0.1:${API_PORT}` by default,
-  so the frontend continues to reach Django even when both servers are exposed
-  externally
-
-Useful overrides:
-
-```sh
-API_PORT=9000 WEB_PORT=4300 make dev
-API_PROXY_TARGET=http://127.0.0.1:9000 make dev
-DJANGO_ALLOWED_HOSTS='*' make dev DEV_MODE=lan
-RUNTIME_ROOT=$PWD/.runtime/dev-alt make dev
-```
-
-### Individual Servers
-
-Start the Django development server from the repository root:
-
-```sh
-make dev-api
-```
-
-The underlying script lives at `./scripts/dev/api-server.sh`.
-
-Expose the Django development server on all interfaces:
-
-```sh
-make dev-api API_HOST=0.0.0.0
-```
-
-The API health endpoint is available at
-[`http://127.0.0.1:8000/healthz`](http://127.0.0.1:8000/healthz) and currently
-returns:
-
-```json
-{"status": "ok", "service": "symphony-api"}
-```
-
-The runtime API also serves the dashboard JSON endpoints under `/api/v1/*`.
-
-### Frontend Dashboard
-
-Start the Angular development server from the repository root:
-
-```sh
-make dev-web
-```
-
-The underlying script lives at `./scripts/dev/web-server.sh`.
-
-Expose the Angular dev server on all interfaces:
-
-```sh
-make dev-web WEB_HOST=0.0.0.0
-```
-
-The Angular dev server runs on `http://127.0.0.1:4200` by default and proxies
-`/api/*` requests to the `API_PROXY_TARGET` generated by
-`./scripts/dev/web-server.sh`, which defaults to `http://127.0.0.1:8000`.
-
-### Orchestrator
-
-Run a single startup-cleanup and poll tick:
-
-```sh
-cd apps/api
-../../.venv/bin/python manage.py run_orchestrator --once --port 9000
-```
-
-Run the long-lived orchestrator loop:
-
-```sh
-cd apps/api
-../../.venv/bin/python manage.py run_orchestrator --port 9000
-```
-
-Expose the orchestrator HTTP sidecar on all interfaces:
-
-```sh
-cd apps/api
-../../.venv/bin/python manage.py run_orchestrator --port 9000 --host 0.0.0.0
-```
-
-Notes:
-
-- `WORKFLOW.md` defaults to the repository root, but you can also pass an
-  explicit path as the first positional argument.
-- `--port` enables the runtime HTTP server. Omitting it disables the extra
-  listener.
-- `--host` defaults to `127.0.0.1`. Use `0.0.0.0` only when you intentionally
-  want the dashboard/API reachable from other machines on your network.
-- A valid Linear configuration is required for real dispatching, including
-  `LINEAR_API_KEY` and workflow tracker settings.
-
-### uv Tool Install
-
-Install the orchestrator command as a uv tool from this repository:
-
-```sh
-uv tool install --editable .
-```
-
-Then run it directly:
-
-```sh
-symphony-orchestrator --port 9000 --host 0.0.0.0
-```
-
-If you do not want to install it permanently, run it ad hoc from the checkout:
-
-```sh
-uv tool run --from . symphony-orchestrator --port 9000 --host 0.0.0.0
-```
-
-## Quality Gates
-
-The repository uses the same commands locally and in CI:
-
-- Backend: `make lint-api`, `make typecheck-api`, `make test-api`
-- Frontend: `make lint-web`, `make typecheck-web`, `make test-web`
-
-GitHub Actions runs these checks on every `push` and `pull_request` via the
-[workflow file](.github/workflows/ci.yml).
-
-## Current Status
-
-- Django, DRF, and drf-spectacular back the runtime API under `apps/api`.
-- Angular standalone routes under `apps/web` render runtime dashboard views and
-  consume the backend `/api/v1/*` endpoints during local development.
-- The orchestrator command loads typed workflow config from `WORKFLOW.md`,
-  configures runtime observability, and can run once or continuously.
-- Product behavior and sequencing live in [`docs/SPEC.md`](docs/SPEC.md) and
-  [`docs/EXEC_PLAN.md`](docs/EXEC_PLAN.md).
+| Document | Description |
+|---|---|
+| [`docs/development.md`](docs/development.md) | Dev server setup, port configuration, orchestrator flags, CI |
+| [`docs/SPEC.md`](docs/SPEC.md) | Product behavior and sequencing |
+| [`docs/ADR/`](docs/ADR/) | Architecture decision records |
