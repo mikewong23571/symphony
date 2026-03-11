@@ -235,6 +235,26 @@ def test_orchestrator_dispatches_and_schedules_continuation_retry(tmp_path: Path
     asyncio.run(run_test())
 
 
+def test_orchestrator_builds_owned_tracker_client_via_factory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path=tmp_path)
+    built_configs: list[ServiceConfig] = []
+    fake_client = FakeTrackerClient()
+
+    def build_client(service_config: ServiceConfig) -> FakeTrackerClient:
+        built_configs.append(service_config)
+        return fake_client
+
+    monkeypatch.setattr("symphony.orchestrator.core.build_tracker_read_client", build_client)
+
+    orchestrator = Orchestrator(config=config)
+
+    assert orchestrator.tracker_client is fake_client
+    assert built_configs == [config]
+
+
 def test_orchestrator_cleans_workspace_when_success_returns_terminal_issue(tmp_path: Path) -> None:
     issue = build_issue()
     terminal_issue = build_issue(state="Done")

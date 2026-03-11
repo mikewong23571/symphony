@@ -41,7 +41,7 @@ from symphony.orchestrator.recovery import (
     load_recovery_state,
     publish_recovery_state,
 )
-from symphony.tracker import Issue, LinearTrackerClient
+from symphony.tracker import Issue, TrackerReadClient, build_tracker_read_client
 from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
 from symphony.workspace import WorkspaceError, WorkspaceManager
 from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
@@ -49,14 +49,6 @@ from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
 CONTINUATION_RETRY_DELAY_MS = 1_000
 FAILURE_RETRY_BASE_DELAY_MS = 10_000
 logger = logging.getLogger(__name__)
-
-
-class TrackerClientProtocol(Protocol):
-    def fetch_candidate_issues(self) -> list[Issue]: ...
-
-    def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]: ...
-
-    def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]: ...
 
 
 class WorkerRunner(Protocol):
@@ -68,7 +60,7 @@ class WorkerRunner(Protocol):
         config: ServiceConfig,
         config_provider: Callable[[], ServiceConfig] | None,
         service_info: ServiceInfo,
-        tracker_client: TrackerClientProtocol,
+        tracker_client: TrackerReadClient,
         on_event: Callable[[AgentRuntimeEvent], Awaitable[None]] | None,
         workspace_manager: WorkspaceManager | None,
     ) -> Coroutine[Any, Any, AttemptResult]: ...
@@ -146,7 +138,7 @@ class Orchestrator:
         self,
         *,
         config: ServiceConfig,
-        tracker_client: TrackerClientProtocol | None = None,
+        tracker_client: TrackerReadClient | None = None,
         worker_runner: WorkerRunner = run_issue_attempt,
         workspace_manager: WorkspaceManager | None = None,
         service_info: ServiceInfo | None = None,
@@ -156,7 +148,7 @@ class Orchestrator:
         self._workflow_runtime = workflow_runtime
         self._owns_tracker_client = tracker_client is None
         self._owns_workspace_manager = workspace_manager is None
-        self.tracker_client = tracker_client or LinearTrackerClient(config.tracker)
+        self.tracker_client = tracker_client or build_tracker_read_client(config)
         self.worker_runner = worker_runner
         self.workspace_manager = workspace_manager or WorkspaceManager(config.workspace.root)
         self.service_info = service_info or ServiceInfo(name="symphony", version="0.1.0")
@@ -1204,7 +1196,7 @@ class Orchestrator:
         self.state.max_concurrent_agents = config.agent.max_concurrent_agents
 
         if self._owns_tracker_client and config.tracker != previous_config.tracker:
-            self.tracker_client = LinearTrackerClient(config.tracker)
+            self.tracker_client = build_tracker_read_client(config)
         if self._owns_workspace_manager and config.workspace.root != previous_config.workspace.root:
             previous_manager = self.workspace_manager
             self.workspace_manager = WorkspaceManager(config.workspace.root)
