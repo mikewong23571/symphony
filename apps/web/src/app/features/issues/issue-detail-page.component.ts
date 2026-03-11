@@ -80,7 +80,6 @@ type IssueState =
             <mat-card appearance="outlined">
               <mat-card-content>
                 <div class="identity-header">
-                  <h3 class="identity-title">{{ detail.identifier }}</h3>
                   <mat-chip-set>
                     <mat-chip class="chip-accent" disableRipple>{{
                       detail.statusLabel
@@ -116,9 +115,6 @@ type IssueState =
             <!-- Sessions grid -->
             <div class="sessions-grid">
               <mat-card appearance="outlined">
-                <mat-card-header>
-                  <mat-card-subtitle>Current session</mat-card-subtitle>
-                </mat-card-header>
                 <mat-card-content>
                   @if (detail.currentSession; as s) {
                     <app-session-summary [session]="s" />
@@ -129,9 +125,6 @@ type IssueState =
               </mat-card>
 
               <mat-card appearance="outlined">
-                <mat-card-header>
-                  <mat-card-subtitle>Last session summary</mat-card-subtitle>
-                </mat-card-header>
                 <mat-card-content>
                   @if (detail.previousSession; as s) {
                     <app-session-summary [session]="s" />
@@ -145,10 +138,7 @@ type IssueState =
             <!-- Events card -->
             <mat-card appearance="outlined">
               <mat-card-header>
-                <mat-card-subtitle>Recent events</mat-card-subtitle>
-                <mat-card-title>Recent activity</mat-card-title>
-                <span class="spacer"></span>
-                <a mat-button routerLink="/">Return to dashboard</a>
+                <mat-card-title>Recent events</mat-card-title>
               </mat-card-header>
               <mat-divider />
               <mat-card-content>
@@ -218,11 +208,7 @@ type IssueState =
         gap: 0.75rem;
         margin-bottom: 1rem;
       }
-      .identity-title {
-        font-size: 1.875rem;
-        font-weight: 600;
-        margin: 0;
-      }
+
       .detail-grid {
         display: grid;
         gap: 1rem 2rem;
@@ -262,9 +248,7 @@ type IssueState =
       }
 
       /* Events */
-      .spacer {
-        flex: 1;
-      }
+
       .event-item {
         padding: 1rem 0;
       }
