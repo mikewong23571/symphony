@@ -1,4 +1,4 @@
-# Deliver the 2026-03-10 Roadmap Workstreams
+# Deliver a Plane Self-Host Tracker Adapter Without Semantic Drift
 
 This ExecPlan is a living document. The sections `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` must be kept up to date as work proceeds.
 
@@ -6,302 +6,327 @@ This document must be maintained in accordance with `.agent/PLANS.md`.
 
 ## Purpose / Big Picture
 
-`docs/ROADMAP.md` is the repository-level statement of the major work still needed after Symphony’s core execution path landed. The repository can already poll Linear, create workspaces, run the coding agent, reconcile state, publish runtime snapshots, emit structured logs, recover retry/session state across restarts, apply workflow-owned observability settings, serve a real Angular dashboard, and expose a backend-owned tracker write surface.
+After this change, Symphony will be able to read work from a self-hosted Plane instance and execute the same orchestration flow that currently works only with Linear. An operator will be able to point `WORKFLOW.md` at `tracker.kind: plane`, start the orchestrator, watch eligible Plane issues enter the runtime snapshot, and use the existing backend-owned tracker write endpoints to add comments, transition issue state, and attach pull request context in a Plane-compatible way.
 
-When this plan is complete, an operator will be able to start the orchestrator, observe stable `key=value` lifecycle logs for dispatch and recovery, restart the process without losing retry timing and session summaries, open an Angular dashboard that consumes the existing `/api/v1/*` runtime endpoints, inspect issue and retry details there, and optionally use backend-owned tracker write endpoints instead of depending only on agent tools for comments or transitions. The proof is behavioral: focused tests pass at each milestone, repository-wide quality gates pass, the docs are updated to match reality, and a human can manually exercise the runtime and UI surfaces without reading the source first.
+The most important outcome is architectural, not cosmetic. The repository must stop treating “tracker” as a synonym for Linear. A contributor should be able to add or evolve tracker kinds by implementing a bounded adapter layer, not by scattering tracker-specific conditionals across orchestration, API views, or Angular state. This plan therefore starts by defining stable interfaces and typed configuration boundaries before any Plane transport code is added.
 
 ## Progress
 
-- [x] 2026-03-10 12:14Z: Audited `docs/ROADMAP.md`, `docs/SPEC.md`, `docs/SPEC_GAPS.md`, `.agent/PLANS.md`, the archived ExecPlan in `docs/archive/EXEC_PLAN_SPEC_GAPS_CONFORMANCE_2026-03-10.md`, and the current backend/frontend entrypoints to identify the concrete modules each roadmap workstream touches.
-- [x] 2026-03-10 12:14Z: Replaced the placeholder `docs/EXEC_PLAN.md` with a repository-specific ExecPlan that turns the roadmap workstreams into sequenced milestones with commands, acceptance criteria, and file-level orientation.
-- [x] 2026-03-10 13:48Z: Re-audited Milestone 1 against `docs/SPEC.md` Sections 13, 17, and 18 plus the current backend code and tests. The runtime already emits structured `key=value` logs for tracker fetch failures, running-state refresh failures, startup cleanup, hook start/failure/timeout, retry scheduling, worker exit, workflow reload failures, and app-server `stderr` diagnostics, so no Milestone 1 backend code changes were required.
-- [x] 2026-03-10 14:02Z: Ran the Milestone 1 baseline backend suite from this ExecPlan and observed `155 passed in 13.56s`.
-- [x] 2026-03-10 14:18Z: Ran the Milestone 1 focused backend suite serially and observed `109 passed in 12.14s`.
-- [x] 2026-03-10 14:23Z: Marked Milestone 1 complete by updating `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan to match the implemented observability baseline and recorded the validation evidence here.
-- [x] 2026-03-10 14:44Z: Re-audited Milestone 2 against the current backend code and tests, confirmed that workspace temp-artifact cleanup, prompt parse-versus-render taxonomy, and token accounting hardening were already implemented, and re-ran the Milestone 2 focused suite with `87 passed in 9.48s`.
-- [x] 2026-03-10 14:46Z: Re-audited Milestone 3 against the current backend code and tests, confirmed that restart recovery persistence and corrupt-recovery fallback behavior were already implemented, and re-ran the Milestone 3 focused suite with `98 passed in 4.22s`.
-- [x] 2026-03-10 14:47Z: Re-audited Milestone 4 against the current backend code and tests, confirmed that workflow-configurable observability settings and reload application behavior were already implemented, and re-ran the Milestone 4 focused suite with `98 passed in 4.22s`.
-- [x] 2026-03-10 14:51Z: Updated `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan so milestones 1-4 reflect the actual implemented baseline, leaving only Milestones 5 and 6 as open roadmap work.
-- [x] 2026-03-10 12:54Z: Replaced the Angular placeholder bootstrap with a routed standalone app shell, added dashboard/issue/runs feature pages, introduced a shared runtime API/presenter layer, and wired the dev server to proxy `/api/*` traffic to Django during local development.
-- [x] 2026-03-10 12:55Z: Ran the Milestone 5 frontend validation commands in `apps/web` and observed `pnpm lint` -> pass, `pnpm typecheck` -> pass, and `pnpm test` -> `1 passed (4 tests)` during the initial implementation pass.
-- [x] 2026-03-10 13:08Z: Re-ran the Milestone 5 frontend validation commands during the review/fix loop and observed `pnpm lint` -> pass, `pnpm typecheck` -> pass, `pnpm test` -> `1 passed (5 tests)`, and `pnpm build` -> pass with output written to `apps/web/dist/web`.
-- [!] 2026-03-10 13:10Z: Re-ran the repository-wide quality gates after the review fixes using `UV_CACHE_DIR=.uv-cache` because the default `uv` cache path is not writable in this execution environment. `make lint` -> pass and `make typecheck` -> pass. `make test` reached `214 passed, 1 failed`; the remaining failure is `apps/api/tests/unit/api/test_server.py::test_start_runtime_http_server_serves_wsgi_requests_and_closes_cleanly`, which cannot bind a loopback socket in this execution environment (`PermissionError: [Errno 1] Operation not permitted`).
-- [x] 2026-03-10 12:58Z: Completed a manual frontend smoke during the initial implementation pass using a temporary runtime snapshot, Django on `127.0.0.1:8000`, Angular dev-server on `127.0.0.1:4200`, and `playwright-cli`. Verified the dashboard count/totals route, issue detail for `SYM-123`, stale-state handling when `/runs` encountered an aged snapshot, fresh `/runs` retry data after renewing the snapshot timestamps, and a proxied `POST /api/v1/refresh` that returned `202 Accepted`, created the refresh-request file, and reloaded the dashboard state.
-- [x] 2026-03-10 12:58Z: Marked Milestone 5 complete by updating `docs/ROADMAP.md` and this ExecPlan to match the delivered Angular runtime pages, leaving Milestone 6 as the only remaining roadmap work.
-- [x] 2026-03-10 13:43Z: Implemented Milestone 6 with a Symphony-owned tracker mutation contract and service layer under `apps/api/symphony/tracker/`, added Linear-backed comment/state-transition/pull-request attachment support, exposed delegating `POST` endpoints under `apps/api/symphony/api/`, and added focused tracker/API tests for success paths, normalized failures, structured logs, redundant transitions, and repeated pull-request attachment requests.
-- [x] 2026-03-10 22:31Z: Completed the Milestone 6 serial review/fix loop. The final focused tracker-write suite passed with `45 passed in 0.06s`, the final repository-wide quality gates passed with `make lint` -> pass, `make typecheck` -> pass, and `make test` -> pass (`240` backend tests plus `5` frontend tests), and the last clean review reported no remaining findings.
+- [x] 2026-03-11 03:22Z: Read `.agent/PLANS.md`, the tracker sections of `docs/SPEC.md`, the current `docs/EXEC_PLAN.md`, and the relevant backend modules to identify where tracker behavior is coupled to Linear today.
+- [x] 2026-03-11 03:22Z: Used Context7 to capture the current Plane API facts needed for planning: self-hosted instances use a deployment-specific base URL, server-to-server requests authenticate with `X-API-Key`, issues are exposed through REST paths under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`, comments are exposed under `/comments/`, and issue links are exposed under `/links/`.
+- [x] 2026-03-11 03:22Z: Replaced the completed roadmap closeout plan with this new active ExecPlan focused on Plane integration and tracker abstraction.
+- [ ] Implement the adapter framework so `orchestrator/core.py` and `tracker/write_service.py` no longer instantiate `LinearTrackerClient` directly.
+- [ ] Extend workflow configuration and validation so `tracker.kind: plane` is a first-class typed configuration with self-host-friendly fields.
+- [ ] Add a Plane adapter for issue reads, issue normalization, issue comments, issue state transitions, and pull request link attachment.
+- [ ] Update tests, docs, and operator-facing examples so the repository describes a pluggable tracker system instead of a Linear-only system.
 
 ## Surprises & Discoveries
 
-- Observation: the roadmap describes the Angular frontend as “feature placeholders,” but the current application entrypoint is even earlier than that. `apps/web/src/main.ts` bootstraps a single inline standalone component and there is no real router, route tree, or runtime data service yet.
-  Evidence: `apps/web/src/main.ts` contains the only frontend component and renders a static “Operator Dashboard Skeleton” card.
+- Observation: the runtime state itself is already close to tracker-neutral. `apps/api/symphony/orchestrator/core.py` consumes a normalized `Issue` model and does not rely on GraphQL cursors, Linear team IDs, or other transport details during dispatch, retry, reconciliation, or snapshot publication.
+  Evidence: `apps/api/symphony/orchestrator/core.py` only requires `Issue.id`, `Issue.identifier`, `Issue.state`, `Issue.priority`, and `Issue.blocked_by` from tracker reads, while `apps/api/symphony/observability/runtime.py` currently emits `tracked: {}` rather than tracker-specific payloads.
 
-- Observation: the repository already contains `apps/api/symphony/observability/logging.py` and `apps/api/symphony/orchestrator/recovery.py`, which means parts of the roadmap’s backend work are not greenfield. Each backend milestone must begin with a brief re-audit against `docs/SPEC.md`, `docs/SPEC_GAPS.md`, and the current code before editing, otherwise the implementation risks duplicating or partially replacing existing behavior.
-  Evidence: `apps/api/symphony/orchestrator/core.py` imports both modules today.
+- Observation: the strongest coupling is concentrated in three places: workflow validation, adapter construction, and the write contract’s state-scope vocabulary.
+  Evidence: `apps/api/symphony/workflow/config.py` only validates `tracker.kind == "linear"` and falls back to `LINEAR_API_KEY`; `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/tracker/write_service.py` instantiate `LinearTrackerClient` directly; `apps/api/symphony/tracker/write_contract.py` exposes `team_id` and `project_slug`, which are Linear-flavored names.
 
-- Observation: `docs/ROADMAP.md` is broader than `docs/SPEC_GAPS.md`. Some workstreams are core conformance gaps, some are recommended extensions from `docs/SPEC.md`, and some are product delivery items with no direct spec conformance requirement.
-  Evidence: the roadmap explicitly groups work into `Core Conformance Workstreams`, `Recommended Extension Workstreams`, and `Product and UI Workstreams`.
+- Observation: Plane’s published API shape is REST-first, not GraphQL-first, and self-hosting changes the base URL story materially.
+  Evidence: Context7’s Plane developer docs describe issue reads under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`, comments under `/comments/`, links under `/links/`, and `X-API-Key` authentication, while the self-hosting docs note that the effective base URL depends on the deployment domain and setup.
 
-- Observation: Milestone 1 code had already landed before this closeout, but the living docs still described the observability layer as largely unimplemented.
-  Evidence: the Milestone 1 focused suite already passes with assertions for `event=tracker_candidate_fetch_failed`, `event=tracker_running_state_refresh_failed`, `event=workflow_reload_failed`, `event=hook_started`, `event=hook_failed`, `event=hook_timed_out`, `event=retry_scheduled`, `event=worker_exit`, and `event=app_server_stderr`.
-
-- Observation: the same documentation drift extended beyond Milestone 1. Current code and focused pytest suites show that Milestones 2, 3, and 4 had already landed as well.
-  Evidence: `apps/api/symphony/workspace/manager.py` already implements `remove_temporary_artifacts(...)`; `apps/api/symphony/agent_runner/prompting.py` already exposes `PromptTemplateParseError` and `PromptTemplateRenderError`; `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/orchestrator/recovery.py` already persist and restore recovery state; `apps/api/symphony/workflow/config.py` already defines `ObservabilityConfig`; and the re-run focused suites for Milestones 2-4 all passed on 2026-03-10.
+- Observation: Plane has an obvious match for comments and a plausible match for pull request metadata, but the current Symphony “attachment” naming no longer fits the external system cleanly.
+  Evidence: Context7 exposes Plane comment endpoints and issue link endpoints, but the current Symphony write contract is named around `TrackerAttachment` and serializes `attachment_id`, which reflects Linear `attachmentCreate` rather than a tracker-neutral concept.
 
 ## Decision Log
 
-- Decision: Use one active ExecPlan derived from `docs/ROADMAP.md` to sequence the remaining repository work in priority order, even though individual milestones may later be split into narrower follow-on ExecPlans if review scope or implementation complexity demands it.
-  Rationale: the user requested a plan for the tasks described in the roadmap, and the repository currently has no active plan. A single umbrella ExecPlan gives the next contributor a complete map from roadmap to codebase while still allowing later milestone-specific refinement.
-  Date/Author: 2026-03-10 / Codex
+- Decision: Introduce a tracker adapter framework before adding any Plane transport code.
+  Rationale: the current repository couples tracker selection to direct `LinearTrackerClient(...)` construction in runtime code. Adding Plane without a factory and protocols would spread tracker conditionals into the orchestrator and API layer, which is the semantic drift this plan is intended to prevent.
+  Date/Author: 2026-03-11 / Codex
 
-- Decision: Preserve the roadmap priority order for milestone sequencing: structured logging first, workspace/runtime polish second, restart recovery third, configurable observability fourth, Angular frontend fifth, and tracker write APIs last.
-  Rationale: that order matches `docs/ROADMAP.md`, keeps core conformance ahead of extensions, and avoids building the primary UI or a public write API before the backend runtime, logging, and recovery story are stable.
-  Date/Author: 2026-03-10 / Codex
+- Decision: Replace the single flat Linear-shaped tracker configuration with distinct typed tracker config dataclasses for Linear and Plane, kept behind a shared `ServiceConfig.tracker` union.
+  Rationale: reusing fields like `endpoint` and `project_slug` for Plane would overload names and force future readers to remember tracker-specific reinterpretations. Separate dataclasses keep the meaning of each field stable.
+  Date/Author: 2026-03-11 / Codex
 
-- Decision: Require every milestone to finish with documentation synchronization in addition to code and tests.
-  Rationale: the repository already contains evidence that docs and code can drift on the same day. A milestone is not complete until `docs/SPEC_GAPS.md`, `docs/ROADMAP.md`, and this ExecPlan describe the actual resulting state.
-  Date/Author: 2026-03-10 / Codex
+- Decision: Generalize mutation scope names from `team_id` and `project_slug` to neutral identifiers such as `workflow_scope_id` and `project_ref`.
+  Rationale: state transitions need a way to say “which state list applies to this issue,” but that concept is not always a Linear team. Renaming the contract at the boundary avoids baking Linear vocabulary into every future adapter.
+  Date/Author: 2026-03-11 / Codex
 
-- Decision: Treat the Milestone 1 closeout as a documentation-and-validation update rather than force additional backend changes.
-  Rationale: the current implementation and focused pytest coverage already satisfy the observability scope described for Milestone 1. Writing redundant code here would increase risk without adding missing behavior.
-  Date/Author: 2026-03-10 / Codex
+- Decision: Keep the existing repository-owned `/pull-request` endpoint, but migrate its internal storage model from “attachment” to “link-backed pull request artifact,” using Plane issue links as the first target implementation.
+  Rationale: the user-facing action remains “attach pull request context to an issue,” but Plane exposes issue links rather than Linear attachments. Preserving the endpoint behavior while neutralizing internal terminology gives the system a stable purpose and a tracker-specific implementation detail.
+  Date/Author: 2026-03-11 / Codex
 
-- Decision: Treat Milestones 2, 3, and 4 the same way after re-audit and focused validation, and collapse the remaining roadmap backlog to Milestones 5 and 6.
-  Rationale: the current repository already contains the workspace polish, restart recovery, and workflow-configurable observability behaviors those milestones describe. Leaving them marked open would misstate the codebase and create stale follow-up work.
-  Date/Author: 2026-03-10 / Codex
+- Decision: Preserve the runtime snapshot and Angular API response shapes for issue execution state unless a Plane requirement forces a change.
+  Rationale: the runtime UI is already tracker-neutral enough. Changing it during the adapter refactor would expand the scope without helping the main integration goal.
+  Date/Author: 2026-03-11 / Codex
 
 ## Outcomes & Retrospective
 
-Milestones 1 through 6 are now recorded as complete. The repository already met the first four backend roadmap goals before this closeout, Milestone 5 adds a real Angular operator surface with routed dashboard, issue detail, and runs pages backed by the existing Django runtime APIs, and Milestone 6 now adds a backend-owned tracker mutation contract plus HTTP endpoints for comments, state transitions, and pull-request metadata attachment. This closeout re-ran the milestone-focused validation commands, synchronized the living docs with the observed behavior, and cleared the remaining roadmap item that previously left tracker writes agent-tool-driven only.
-
-No roadmap workstreams remain open in this ExecPlan after the Milestone 6 implementation pass.
+This plan replaces the previous completed roadmap closeout document with a new active implementation plan. No code has been changed yet. The repository now has a concrete design and sequencing document for adding Plane self-host support without turning the orchestration layer into a pile of tracker-specific branches. The main lesson from the research phase is that the correct first move is to formalize adapter boundaries and typed configuration, because the orchestrator core is already generic enough to benefit from that separation.
 
 ## Context and Orientation
 
-This repository is split into a Django backend under `apps/api` and an Angular frontend under `apps/web`. The backend runtime already exists. `apps/api/symphony/orchestrator/core.py` is the central state machine: it owns polling, dispatch, retries, reconciliation, runtime snapshots, and restart recovery hooks. `apps/api/symphony/agent_runner/harness.py`, `apps/api/symphony/agent_runner/client.py`, `apps/api/symphony/agent_runner/events.py`, and `apps/api/symphony/agent_runner/prompting.py` together manage one issue attempt, app-server session streaming, token accounting, and prompt rendering. `apps/api/symphony/workspace/manager.py` and `apps/api/symphony/workspace/hooks.py` manage per-issue workspaces and lifecycle hooks. `apps/api/symphony/workflow/config.py` and `apps/api/symphony/workflow/loader.py` turn `WORKFLOW.md` into typed runtime settings. `apps/api/symphony/observability/runtime.py`, `apps/api/symphony/observability/snapshots.py`, and `apps/api/symphony/observability/logging.py` own runtime snapshot files and structured logging helpers. `apps/api/symphony/api/views.py` now exposes the operator-facing HTTP surfaces for runtime reads and refreshes plus tracker write endpoints for comments, transitions, and pull-request attachment metadata.
+Symphony is a long-running service that polls a tracker, decides which issues are eligible to run, starts a Codex-backed worker for each eligible issue, keeps runtime state in memory, and publishes a read-only runtime snapshot for the HTTP API and Angular UI. In this repository, the “orchestrator” is the scheduling and retry loop in `apps/api/symphony/orchestrator/core.py`. A “tracker adapter” is the module that knows how to talk to one external issue tracker and convert its payloads into Symphony’s normalized domain models.
 
-The frontend is much less complete. `apps/web/src/main.ts` bootstraps a single static standalone component. The intended feature roots exist only as README placeholders under `apps/web/src/app/features/dashboard`, `apps/web/src/app/features/issues`, and `apps/web/src/app/features/runs`. Shared UI and helper areas also exist only as README stubs under `apps/web/src/app/shared`. The design system foundation is already present through Tailwind and tokenized styles, so the frontend work should add real standalone components, routes, and data services rather than invent a second styling stack.
+Today the repository is only partially abstracted. The normalized `Issue` model lives in `apps/api/symphony/tracker/models.py`, and `TrackerMutationService` in `apps/api/symphony/tracker/write_service.py` already hides some write orchestration details behind a backend protocol. However, the concrete implementation is still hard-wired to Linear in multiple places.
 
-For this plan, a “structured log” means a stable `key=value` log line emitted through the normal Python logging stack and carrying event-specific context such as `issue_id`, `issue_identifier`, `session_id`, hook name, error code, or retry metadata. A “recovery file” means a JSON file written atomically to disk so a new orchestrator process can rebuild retry timing and the last known live-session summary without pretending a dead subprocess is still alive. A “first-class tracker write API” means a Symphony-owned backend interface, exposed through Python services and optionally HTTP endpoints, that performs tracker comments, transitions, or pull-request metadata writes with normalized success and error semantics instead of relying only on whatever tools the coding agent happens to use in a prompt.
+The current hot spots are these:
 
-The existing tests relevant to this plan already live in the repository and should be extended instead of duplicated. Backend runtime tests are concentrated in `apps/api/tests/unit/orchestrator/test_core.py`, `apps/api/tests/unit/agent_runner/test_harness.py`, `apps/api/tests/unit/agent_runner/test_client.py`, `apps/api/tests/unit/agent_runner/test_events.py`, `apps/api/tests/unit/agent_runner/test_prompting.py`, `apps/api/tests/unit/workspace/test_manager.py`, `apps/api/tests/unit/workspace/test_hooks.py`, `apps/api/tests/unit/workflow/test_config.py`, `apps/api/tests/unit/management/test_run_orchestrator.py`, `apps/api/tests/unit/api/test_server.py`, and `apps/api/tests/unit/api/test_state.py`. Frontend validation will need to extend the Angular source tree and may introduce Vitest coverage for services and pure components once those files exist.
+`apps/api/symphony/workflow/config.py` defines `TrackerConfig` with Linear-shaped fields, defaults the endpoint to `https://api.linear.app/graphql`, validates only `tracker.kind == "linear"`, and falls back only to `LINEAR_API_KEY`.
+
+`apps/api/symphony/tracker/linear_client.py` owns all tracker reads and writes, including candidate issue fetch, issue-state refresh, issue lookup, workflow-state listing, comment creation, attachment creation, and issue state update. It assumes Linear GraphQL queries, GraphQL pagination, and Linear-specific error codes.
+
+`apps/api/symphony/tracker/linear.py` normalizes Linear issue payloads into `Issue`, including label, blocker, branch, and timestamp extraction.
+
+`apps/api/symphony/orchestrator/core.py` defines `TrackerClientProtocol`, but it still constructs `LinearTrackerClient` directly during startup and config reload.
+
+`apps/api/symphony/tracker/write_contract.py` and `apps/api/symphony/tracker/write_service.py` present a partly generic write contract, but that contract still carries Linear vocabulary through `team_id`, `project_slug`, `TrackerAttachment`, GraphQL-oriented metadata validation language, and direct normalization of Linear exception types.
+
+`apps/api/symphony/api/views.py` exposes backend-owned write endpoints. These views are already useful because they speak in tracker-neutral user actions such as “comment,” “state transition,” and “pull request attachment.” They should remain thin request/response adapters and must not grow tracker business logic.
+
+The Context7 research adds the key external facts that shape this plan. Plane’s public API uses REST paths under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`. Self-hosted instances do not use a universal cloud hostname; the operator supplies the base URL for their own deployment. Authentication for server-side API calls is done with `X-API-Key`. Plane exposes issue comments under `/comments/` and issue links under `/links/`. Those facts make Plane a good fit for a dedicated adapter, but they also confirm that overloading Linear’s GraphQL-oriented config and naming would create confusion.
 
 ## Plan of Work
 
-### Milestone 1: Finish structured logging and observability maturity
+The work begins by creating a strict adapter boundary. In `apps/api/symphony/tracker/`, add a small interface module and a factory module. The interface module must define the read protocol used by the orchestrator and the mutation backend protocol used by `TrackerMutationService`. The factory module must be the only place that chooses a concrete tracker implementation from `ServiceConfig`. After this milestone, `apps/api/symphony/orchestrator/core.py` must depend only on the read protocol and the factory, and `apps/api/symphony/tracker/write_service.py` must depend only on the mutation backend protocol and the factory. No runtime module outside the tracker package may import `LinearTrackerClient` or `PlaneTrackerClient` directly.
 
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+At the same time, reshape workflow configuration to stop reinterpreting Linear names as generic concepts. In `apps/api/symphony/workflow/config.py`, replace the single flat tracker dataclass with a small family of typed dataclasses. `LinearTrackerConfig` should keep the existing GraphQL endpoint and `project_slug` semantics. `PlaneTrackerConfig` should carry `api_base_url`, `api_key`, `workspace_slug`, and `project_id`, plus the shared `active_states` and `terminal_states`. `ServiceConfig.tracker` becomes a union of those dataclasses. `build_service_config(...)` and `validate_dispatch_config(...)` must branch by tracker kind and produce precise error messages for missing Plane fields without disturbing Linear behavior. This is the core design move that prevents later semantic drift.
 
-At the end of this milestone, every operator-significant dispatch, retry, reconciliation, workflow-reload, hook, startup, and app-server diagnostic path described in `docs/ROADMAP.md` will emit stable operator-visible structured logs. This is the first milestone because the rest of the roadmap depends on being able to see what the system is doing and why it failed.
+With the boundary in place, build the Plane read path. Add `apps/api/symphony/tracker/plane.py` for payload normalization and `apps/api/symphony/tracker/plane_client.py` for HTTP transport. The client must implement the same read protocol as Linear: fetch candidate issues, fetch issues by states, and fetch issue states by IDs. Use the REST paths from the Plane docs: list issues under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`, paginate using the API’s cursor fields, and authenticate every request with `X-API-Key`. Keep Plane-specific parsing and error mapping inside the tracker package. The normalized `Issue` model should not change unless the new tracker truly requires one additional field that both trackers can provide meaningfully.
 
-Begin by re-auditing the current logging and observability paths against `docs/SPEC.md` Sections 13, 17, and 18, the open items in `docs/SPEC_GAPS.md`, and the reality of `apps/api/symphony/orchestrator/core.py`, `apps/api/symphony/agent_runner/harness.py`, `apps/api/symphony/agent_runner/client.py`, `apps/api/symphony/workspace/hooks.py`, and `apps/api/symphony/management/commands/run_orchestrator.py`. The repository already has `apps/api/symphony/observability/logging.py`; extend and standardize that helper instead of introducing a second logging format. Confirm that the key lifecycle events called out in the roadmap really emit `key=value` lines with stable field order and enough context for operators to correlate issue, session, hook, retry, and startup failures.
+Before the Plane write path lands, neutralize the write contract language. In `apps/api/symphony/tracker/write_contract.py`, rename `team_id` to `workflow_scope_id` and rename `project_slug` to `project_ref`. Replace `TrackerAttachment` with a neutral link-oriented model such as `TrackerArtifactLink` or `TrackerIssueLink`, then update `TrackerPullRequestResult` to refer to that neutral model. The API view in `apps/api/symphony/api/views.py` may preserve the existing response envelope for one transition period if compatibility is required, but the internal contract must stop pretending that every tracker has Linear attachments. Update the write service to resolve transition targets by `workflow_scope_id` rather than by Linear team ID.
 
-Then close the remaining observability gaps in the runtime code. The orchestrator should log silent tracker fetch and refresh failures, startup terminal-cleanup failures, retry scheduling decisions, worker exits, cancellation reasons, and workflow reload failures. The hook layer should log hook start, completion, timeout, and failure while preserving the spec’s “best effort” behavior for hooks that should not crash the outer action. The app-server client should surface buffered `stderr` lines as diagnostic logs without changing session liveness semantics. Token accounting should become precise enough that later dashboard work can trust the totals it renders. If the spec gap audit is now stale because the code already closes some of these items, update the docs during the milestone instead of carrying stale backlog language forward.
+After that refactor, implement Plane writes inside `apps/api/symphony/tracker/plane_client.py`. Use the Plane comment endpoint for `add_comment`, the issue update endpoint with a new state UUID for `transition_issue`, and the Plane issue links endpoint to store pull request URLs. The plan assumes that a pull request “attachment” in Plane is best modeled as a link plus optional metadata carried in a bounded, repository-owned encoding. If the issue link API cannot store all of the current metadata fields natively, add a small normalization rule in the Plane adapter and document it clearly in tests and docs. Do not push that workaround into `TrackerMutationService` or the HTTP views.
 
-The milestone is complete only when the focused backend tests assert log output, the runtime snapshot still behaves as before, and `docs/SPEC_GAPS.md` and `docs/ROADMAP.md` clearly show which observability items are closed and which remain.
+The last code milestone is repository-wide cleanup. Update `apps/api/symphony/tracker/__init__.py` and `apps/api/symphony/tracker/README.md` to export and describe the generic adapter framework. Update `apps/api/symphony/agent_runner/prompting.py` so the fallback prompt says “issue from the configured tracker” or includes the tracker kind rather than naming Linear. Update `docs/SPEC.md`, `docs/development.md`, and any tests that currently assert Linear-only behavior. The finished repository must describe tracker support accurately: Linear remains supported, Plane is added, and new adapters are expected to plug in through the same interfaces.
 
-### Milestone 2: Close workspace and runtime polish gaps
+### Milestone 1: Establish the adapter framework
 
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+At the end of this milestone, the repository still behaves exactly as a Linear-only system, but the code structure no longer hard-codes that fact in the orchestrator or API layer. A contributor will be able to point to a single factory and two small protocols as the extension points for any tracker kind.
 
-At the end of this milestone, the smaller remaining core-runtime mismatches from the roadmap will be closed so the backend behavior matches the spec surface more exactly rather than only “in spirit.” This work is intentionally grouped because these gaps are small but easy to lose if they are scattered across unrelated feature work.
+Create `apps/api/symphony/tracker/interfaces.py` and `apps/api/symphony/tracker/factory.py`. Move the read protocol out of `apps/api/symphony/orchestrator/core.py` into the tracker package, move the mutation backend protocol out of `apps/api/symphony/tracker/write_service.py` into the same shared interface module, and update both callers to consume those definitions. In the factory module, define one builder for read clients and one builder for mutation backends. Both builders should switch on the typed tracker config, returning `LinearTrackerClient` for existing workflows. Update `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/tracker/write_service.py` to use those builders. The proof for this milestone is behavioral: every existing Linear-focused unit test still passes, but no module outside `apps/api/symphony/tracker/` constructs a tracker client directly.
 
-Start in `apps/api/symphony/workspace/manager.py` and `apps/api/symphony/agent_runner/harness.py`. Ensure every attempt performs a safe pre-run cleanup of repository-local temporary artifacts such as `tmp` and `.elixir_ls` directly inside the per-issue workspace before hooks or the agent run. The cleanup must prove the target still sits under the intended workspace root before removing anything, and repeated attempts must be safe. Failures in this preparation step should be typed and operator-visible, not silently ignored.
+### Milestone 2: Add typed tracker configuration
 
-Then refine prompt rendering in `apps/api/symphony/agent_runner/prompting.py` so parse failures and render failures are distinguishable. The plan requires separate error classes and separate error codes, because the operator response is different when the template is invalid versus when the input data cannot satisfy a valid template. Tighten token accounting in `apps/api/symphony/agent_runner/events.py` and the orchestrator so repeated absolute totals do not double-count and lower-quality delta payloads do not pollute the runtime aggregates. When this milestone ends, the smaller core items tracked in `docs/SPEC_GAPS.md` should be closed or explicitly reworded if the implementation uncovered a narrower remaining issue.
+At the end of this milestone, `WORKFLOW.md` can express either a Linear config or a Plane config without reusing misleading field names. The repository still only needs to run Linear code paths at this moment, but the config layer is ready for Plane.
 
-### Milestone 3: Complete restart recovery and state persistence
+Refactor `apps/api/symphony/workflow/config.py` so `ServiceConfig.tracker` is a union of `LinearTrackerConfig` and `PlaneTrackerConfig`. Keep shared state lists in both dataclasses so the orchestrator remains generic. Add Plane-specific validation errors such as missing API base URL, missing workspace slug, and missing project ID. Update the relevant workflow config tests in `apps/api/tests/unit/workflow/test_config.py`, `apps/api/tests/unit/workflow/test_runtime.py`, `apps/api/tests/unit/orchestrator/test_core.py`, and `apps/api/tests/unit/management/test_run_orchestrator.py`. The proof for this milestone is that invalid Plane configs fail early with precise messages and valid Linear configs remain unchanged.
 
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+### Milestone 3: Implement Plane reads and runtime dispatch
 
-At the end of this milestone, restarting the Symphony process will no longer drop retry timing and live-session summary state. This is the largest recommended extension in the roadmap and the one with the clearest operator value after core conformance work is finished.
+At the end of this milestone, a self-hosted Plane workflow can populate the runtime snapshot and drive dispatch decisions. Starting the orchestrator with `tracker.kind: plane` and valid Plane credentials will fetch eligible issues, normalize them into `Issue`, and let the scheduler claim, run, retry, and reconcile them exactly as it does for Linear.
 
-Treat `apps/api/symphony/orchestrator/core.py` as the owner of live policy and `apps/api/symphony/orchestrator/recovery.py` as a pure serializer/deserializer. Persist the minimal durable runtime state needed to recover the retry queue and last known session metadata: retry attempt number, due time, workspace path, last error, and the summary of the session fields already tracked on `RunningEntry`. Use atomic write-then-replace semantics, the same style already used for runtime snapshot files, so a crash cannot leave a half-written recovery file.
+Add `apps/api/symphony/tracker/plane.py` and `apps/api/symphony/tracker/plane_client.py`. Keep HTTP transport details and Plane error mapping inside the client. Plane reads must use the deployment-specific base URL, prepend the documented `/api/v1/...` paths, send `X-API-Key`, and normalize the API’s pagination responses. Add focused tests under `apps/api/tests/unit/tracker/` for issue list pagination, issue state refresh, issue lookup, and normalization. Then add an orchestrator-focused test that proves a mocked Plane client can drive dispatch without changing orchestration semantics.
 
-On startup, load the recovery file before the first steady-state poll. Missing recovery state should mean “nothing to restore.” Corrupt recovery state must produce a warning log and then continue with a clean in-memory state. Persisted retry entries should restore their timers using wall-clock due times. Persisted running entries must not be treated as resumed processes; convert them into retry entries with an explicit restart error and preserve the last session summary so operators can still see what had been running. End this milestone by updating the recovery-related docs and by proving the behavior with focused restart tests, including overdue retries and corrupt recovery files.
+### Milestone 4: Neutralize and implement the write contract
 
-### Milestone 4: Add workflow-configurable observability settings
+At the end of this milestone, the backend-owned write surface can target either tracker kind without leaking Linear concepts into its internal types. The `/comments`, `/transition`, and `/pull-request` endpoints still exist, but their backing contract is tracker-neutral and Plane-backed when `tracker.kind: plane`.
 
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
+Refactor `apps/api/symphony/tracker/write_contract.py` and `apps/api/symphony/tracker/write_service.py` first. Rename state-scope fields to neutral names, generalize the pull request link model, and update the service to resolve transition states by a generic workflow scope. Then implement the Plane backend methods in `apps/api/symphony/tracker/plane_client.py`: use the comment endpoint for comments, issue `PATCH` for state updates, and issue link endpoints for pull request URLs. If the Plane link API cannot store arbitrary metadata fields directly, restrict the metadata contract deliberately and encode only the fields the adapter can round-trip safely; record that choice in tests and docs rather than leaving it implicit. Add API endpoint tests under `apps/api/tests/unit/api/test_tracker_writes.py` for the Plane path as well as the existing service tests.
 
-At the end of this milestone, observability settings that matter to operators will be configurable from `WORKFLOW.md` front matter while still allowing environment variable overrides where needed for tests or host-level control. This work comes after recovery because the recovery and snapshot files are the first settings that obviously benefit from a typed configuration surface.
+### Milestone 5: Documentation, examples, and cleanup
 
-Implement a typed `observability` section in `apps/api/symphony/workflow/config.py` and thread it through the backend without falling back to implicit globals scattered across the codebase. The first supported settings should cover snapshot path, refresh-request path, recovery path, snapshot freshness, and any logging verbosity or sink settings that can be expressed without redesigning the whole runtime. Apply the settings through explicit configuration plumbing in `apps/api/symphony/observability/runtime.py` and the orchestrator’s workflow reload path so a workflow reload updates future writes predictably.
+At the end of this milestone, a new contributor can discover the Plane integration path from repository docs alone. The spec, development notes, tracker README, and prompt fallback language all describe the repository’s actual design rather than the older Linear-only baseline.
 
-This milestone also closes the loop on documentation hygiene. `WORKFLOW.md` configuration examples, `docs/ROADMAP.md`, and any lingering “environment variable only” wording in the code comments or docs must be updated so the repository has one coherent story about where observability behavior is configured.
-
-### Milestone 5: Build the Angular runtime pages
-
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
-
-At the end of this milestone, the operator-facing web experience will no longer be the server-rendered fallback alone. The Angular app will have real routes, real data fetching, and clear runtime state handling while still consuming the existing backend APIs rather than duplicating orchestrator logic in the browser.
-
-Begin by turning the current single-component bootstrap in `apps/web/src/main.ts` into a conventional Angular standalone application with a route tree. Create an app shell and route definitions under `apps/web/src/app`, then implement feature slices under `apps/web/src/app/features/dashboard`, `apps/web/src/app/features/issues`, and `apps/web/src/app/features/runs`. Add a small shared API layer under `apps/web/src/app/shared` that reads `/api/v1/state`, `/api/v1/refresh`, and `/api/v1/<issue_identifier>`, normalizes the response shapes used by the UI, and keeps the Angular app as a consumer of backend state only.
-
-The dashboard route should show aggregate counts, workflow status, runtime totals, and active issue rows. The issue detail route should show issue-specific runtime details and the last session summary. The runs route should show retry queue and active-run information derived from existing API responses. Each route must handle loading, empty, unavailable, and stale-state scenarios deliberately. Preserve the design-token approach already set up in `apps/web/src/styles/tokens.css` and `apps/web/src/styles/globals.css`, and keep the server-rendered Django dashboard as a fallback until the Angular UI is production-ready. Finish by adding frontend lint, typecheck, build, and test coverage for the new shared services and any pure transformation logic introduced.
-
-### Milestone 6: Add first-class tracker write APIs
-
-Status: completed on 2026-03-10. The prose below remains as the execution record for what this milestone required.
-
-At the end of this milestone, Symphony will expose an explicit backend-owned write surface for tracker mutations that currently depend on agent tools alone. This milestone is deliberately last, because it should build on a stable observability story, clear runtime state, and an operator UI that can eventually consume or trigger those writes.
-
-Keep the orchestrator boundary intact. Do not move tracker business logic into Django request handlers or Angular state. Instead, extend the tracker integration layer under `apps/api/symphony/tracker/` with a clear write contract for comments, state transitions, and pull-request metadata attachment, then decide whether to expose that contract through management commands, Python service entrypoints, HTTP endpoints under `apps/api/symphony/api/`, or a combination. The important point is that Symphony owns the write semantics and error normalization rather than leaving them implicit in prompts.
-
-Define explicit request and response shapes, normalize tracker-side failures into stable error codes, and log the mutations with the same structured logging layer built earlier in this plan. If any write endpoint becomes user-facing during this milestone, add acceptance coverage that proves the mutation path is idempotent where appropriate, rejects invalid state transitions safely, and emits operator-visible logs. Finish by documenting what still remains agent-tool-driven and what is now backed by Symphony itself.
+Update `docs/SPEC.md` so the tracker section describes Linear and Plane as supported kinds, and move any remaining Linear-only details into kind-specific subsections. Update the optional `linear_graphql` tool language so it is explicitly Linear-only rather than described as the generic tracker extension path. Update `docs/development.md` with a Plane example that uses a self-hosted base URL, `PLANE_API_KEY`, workspace slug, and project ID. Update `apps/api/symphony/tracker/README.md` to describe the factory, protocols, and per-tracker adapter files. Finally, update `apps/api/symphony/agent_runner/prompting.py` to stop naming Linear in the fallback prompt.
 
 ## Concrete Steps
 
-Work from the repository root, `/Users/mike/projs/main/symphony`, unless a step explicitly says otherwise.
+Work from the repository root, `/Users/mike/projs/main/symphony`, unless a step says otherwise.
 
-Before starting Milestone 1, run the current backend-focused baseline so new failures can be attributed to the roadmap work:
+Before implementation begins, run the current focused baseline to freeze the existing behavior:
 
-    uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/agent_runner/test_client.py apps/api/tests/unit/agent_runner/test_events.py apps/api/tests/unit/agent_runner/test_prompting.py apps/api/tests/unit/workspace/test_manager.py apps/api/tests/unit/workspace/test_hooks.py apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/management/test_run_orchestrator.py apps/api/tests/unit/api/test_state.py apps/api/tests/unit/api/test_server.py -q
+    uv run pytest apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/tracker/test_linear.py apps/api/tests/unit/tracker/test_linear_client.py apps/api/tests/unit/tracker/test_write_service.py apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/api/test_tracker_writes.py -q
 
-Expect the suite to exit with `0 failed`. Record the exact passing summary in `Progress` once it is run.
+Expect the suite to pass with no failures. Record the exact summary in `Progress` before editing any tracker code.
 
-After Milestone 1 edits, run:
+After Milestone 1, run:
 
-    uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/agent_runner/test_client.py apps/api/tests/unit/workspace/test_hooks.py apps/api/tests/unit/management/test_run_orchestrator.py apps/api/tests/unit/api/test_state.py -q
+    uv run pytest apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/tracker/test_linear_client.py apps/api/tests/unit/tracker/test_write_service.py apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/api/test_tracker_writes.py -q
 
-Expect focused assertions proving that tracker, hook, startup, retry, and app-server diagnostic failures are logged in a stable operator-visible format.
+Expect all existing Linear-path tests to remain green and import paths to no longer require direct `LinearTrackerClient` construction outside `apps/api/symphony/tracker/`.
 
-After Milestone 2 edits, run:
+After Milestone 2, run:
 
-    uv run pytest apps/api/tests/unit/agent_runner/test_events.py apps/api/tests/unit/agent_runner/test_prompting.py apps/api/tests/unit/agent_runner/test_harness.py apps/api/tests/unit/workspace/test_manager.py apps/api/tests/unit/orchestrator/test_core.py -q
+    uv run pytest apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/workflow/test_runtime.py apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/management/test_run_orchestrator.py -q
 
-Expect explicit cases for temporary-artifact cleanup, parse-versus-render prompt failures, and token-total aggregation without double counting.
+Expect new Plane config cases to pass and invalid Plane workflow definitions to fail with precise error codes and messages.
 
-After Milestone 3 edits, run:
+After Milestone 3, run:
 
-    uv run pytest apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/management/test_run_orchestrator.py apps/api/tests/unit/api/test_state.py -q
+    uv run pytest apps/api/tests/unit/tracker/test_plane.py apps/api/tests/unit/tracker/test_plane_client.py apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/api/test_state.py -q
 
-Expect restart-recovery reconstruction, overdue retry restoration, corrupt recovery-file fallback, and persisted session-summary assertions.
+Expect focused Plane read-path tests to pass and at least one orchestrator test to prove that a Plane-backed config can populate runtime state without touching Linear code paths.
 
-After Milestone 4 edits, run:
+After Milestone 4, run:
 
-    uv run pytest apps/api/tests/unit/workflow/test_config.py apps/api/tests/unit/orchestrator/test_core.py apps/api/tests/unit/management/test_run_orchestrator.py apps/api/tests/unit/api/test_state.py -q
+    uv run pytest apps/api/tests/unit/tracker/test_write_service.py apps/api/tests/unit/api/test_tracker_writes.py apps/api/tests/unit/tracker/test_plane_client.py -q
 
-Expect configuration parsing, workflow reload, and runtime file-path application coverage for observability settings.
+Expect comment creation, state transition, and pull request link attachment to pass for Plane-backed tests, including idempotent repeated pull request submissions against the same issue URL.
 
-After Milestone 5 edits, change to `apps/web` and run:
+After Milestone 5, run the repository-wide checks:
 
-    pnpm lint
-    pnpm typecheck
-    pnpm test
-    pnpm build
-
-Then, from the repository root, run:
-
+    make format
     make lint
     make typecheck
     make test
 
-Expect the Angular app to build cleanly, frontend checks to pass, and the repository-wide gates to remain green. Record both command summaries and a short manual smoke transcript in `Progress`.
+Expect all checks to pass. If `make test` depends on environment-specific networking, document the exact failing test and the environment limitation in `Progress` and `Surprises & Discoveries`.
 
-For the manual frontend smoke after Milestone 5, run the backend and frontend in separate terminals:
+For a manual smoke with a real self-hosted Plane instance after Milestone 4, prepare a repository-local `WORKFLOW.md` whose front matter resembles this:
 
+    ---
+    tracker:
+      kind: plane
+      api_base_url: https://plane.example.com
+      api_key: $PLANE_API_KEY
+      workspace_slug: engineering
+      project_id: 88c2d97c-a6ad-4012-b526-5577c0d7c769
+      active_states: Todo, In Progress
+      terminal_states: Done, Canceled
+    ---
+    # Prompt body
+    Continue working on {{ issue.identifier }}.
+
+Then export credentials and run the backend:
+
+    export PLANE_API_KEY=plane_api_example
     make dev-api
-    make dev-web
 
-Open the Angular app in a browser and verify that the dashboard route loads runtime counts, the issue detail route loads an existing issue snapshot, the runs route shows retry data, and the refresh action issues a `POST` to `/api/v1/refresh` and updates the displayed state. If the Angular app proxies API traffic through a dev-server configuration introduced during the milestone, document that configuration in `Artifacts and Notes`.
+In another terminal, verify the read-only snapshot and one write path:
 
-After Milestone 6 edits, run the focused tracker-write backend tests that are added during implementation, followed by:
+    curl http://127.0.0.1:8000/api/v1/state
+    curl -X POST http://127.0.0.1:8000/api/v1/tracker/issues/ENG-123/comments -H 'Content-Type: application/json' -d '{"body":"Ready for review"}'
 
-    make lint
-    make typecheck
-    make test
-
-Expect the new write path to have explicit success and failure tests, structured logs for each mutation category, and no regression in the existing runtime behavior.
+Expect the runtime state response to include Plane-backed issue identifiers and the comment endpoint to return HTTP `200` with the normalized Symphony response envelope.
 
 ## Validation and Acceptance
 
-Acceptance is behavioral and must be demonstrable without reading the implementation.
+Acceptance is behavioral and must be observable without reading the source.
 
-- After Milestone 1, a failed tracker fetch, failed running-state refresh, failed startup cleanup, hook timeout, hook failure, workflow reload failure, or app-server `stderr` diagnostic produces an operator-visible structured log line with the appropriate issue and session context when available.
-- After Milestone 2, a workspace containing `tmp` or `.elixir_ls` is cleaned before the next run, prompt compilation failures report a different error code than prompt render failures, and repeated absolute token totals do not inflate the runtime snapshot.
-- After Milestone 3, restarting the orchestrator preserves retry timing and last known session summaries through the recovery file, while corrupted recovery state produces a warning and a safe empty recovery instead of a crash.
-- After Milestone 4, `WORKFLOW.md` can define the effective snapshot, refresh-request, and recovery file paths, and a workflow reload changes future writes without requiring a process restart.
-- After Milestone 5, a human can open the Angular UI and use real routes to inspect the runtime dashboard, an issue detail view, and retry/run state backed by `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`. The server-rendered dashboard still works as a fallback.
-- After Milestone 6, a Symphony-owned mutation path can add a tracker comment, perform a state transition, or attach pull-request metadata with normalized error handling and structured audit logs, and invalid or redundant mutations are handled safely.
+After Milestone 1, the orchestrator and API code still pass all existing Linear tests, but the only modules allowed to know about `LinearTrackerClient` are inside `apps/api/symphony/tracker/`.
 
-The full plan is complete only when repository-wide `make lint`, `make typecheck`, and `make test` pass after the final milestone, and the roadmap and gap docs accurately describe the implemented state.
+After Milestone 2, a workflow with `tracker.kind: plane` and missing `api_base_url`, `workspace_slug`, `project_id`, or `api_key` fails validation immediately, while the existing Linear workflow examples remain valid.
+
+After Milestone 3, a valid Plane workflow can fetch active issues from a self-hosted Plane instance, convert them into `Issue`, and expose them through `/api/v1/state` and `/api/v1/<issue_identifier>` using the existing runtime snapshot shapes.
+
+After Milestone 4, the backend-owned write endpoints can create a Plane comment, perform a Plane issue state transition, and attach a pull request URL to a Plane issue in a repeatable way. Repeating the same `/pull-request` request for the same issue and URL must not create duplicate logical records in Symphony’s view of the world.
+
+After Milestone 5, `docs/SPEC.md`, `docs/development.md`, and `apps/api/symphony/tracker/README.md` describe both Linear and Plane accurately, and the fallback prompt no longer tells the agent it is always working on a Linear issue.
+
+The plan is complete only when `make lint`, `make typecheck`, and `make test` pass after the final milestone and the repository docs no longer describe tracker support as Linear-only.
 
 ## Idempotence and Recovery
 
-Every milestone in this plan must be safe to run more than once. Logging changes are additive and should not require destructive migration. Workspace cleanup must remove only known temporary artifacts inside validated per-issue workspace roots, which makes repeated cleanup a no-op once the directory is clean. Recovery-file and runtime-snapshot writes must continue to use atomic replace semantics so an interrupted write never leaves a partial JSON file behind. Workflow-configured observability settings must be applied through typed config and reload-safe plumbing instead of hidden global mutation.
+Every milestone in this plan must remain safe to apply incrementally. The factory and interface refactor is additive and can coexist with the Linear implementation until all callers have moved. The config refactor must preserve the ability to parse existing Linear workflows unchanged. Plane tests should use mocked transports by default so they remain deterministic and rerunnable without a live Plane instance.
 
-The Angular work should be introduced incrementally so the existing Django dashboard remains a fallback until the frontend routes are ready. Tracker write APIs must begin behind explicit server-side contracts and tests; do not make destructive tracker mutations part of startup or implicit background behavior. If a milestone uncovers a schema or interface change that cannot remain backward compatible during implementation, update this ExecPlan with the safe retry and rollback story before merging the code.
+If a milestone lands partially, keep the factory returning only the fully implemented adapters and fail unsupported paths explicitly rather than leaving a half-wired tracker kind silently selected. For write-path work, preserve the repository-owned `/pull-request` endpoint and make any compatibility aliases explicit in tests so the team can safely tighten them later. For docs, update examples only after the corresponding behavior exists; do not publish Plane workflow examples that the code cannot yet execute.
 
 ## Artifacts and Notes
 
-Representative structured log lines should follow this shape:
+The current repository locations that must be revisited during implementation are:
 
-    event=tracker_candidate_fetch_failed error_code=linear_api_request message="Linear request timed out"
+`apps/api/symphony/workflow/config.py` for typed tracker config and validation.
 
-    event=hook_failed hook=after_run issue_id=lin_123 issue_identifier=SYM-123 session_id=thread-1-turn-2 error_code=hook_execution message="Hook 'after_run' failed with exit code 1."
+`apps/api/symphony/tracker/models.py` for the normalized `Issue` model that must remain tracker-neutral.
 
-    event=app_server_stderr issue_id=lin_123 issue_identifier=SYM-123 session_id=thread-1-turn-2 line="warning: tool schema mismatch"
+`apps/api/symphony/tracker/linear.py` and `apps/api/symphony/tracker/linear_client.py` for the Linear reference implementation that the new Plane adapter should mirror structurally, not semantically.
 
-Representative recovery-file content should stay compact and inspectable:
+`apps/api/symphony/tracker/write_contract.py` and `apps/api/symphony/tracker/write_service.py` for mutation contract neutralization.
 
-    {
-      "running": [
-        {
-          "issue_id": "lin_123",
-          "issue_identifier": "SYM-123",
-          "attempt": null,
-          "workspace_path": "/tmp/.../SYM-123",
-          "started_at": "2026-03-10T08:00:00Z",
-          "session": {
-            "session_id": "thread-1-turn-2",
-            "thread_id": "thread-1",
-            "turn_id": "turn-2",
-            "turn_count": 2,
-            "last_event": "turn_completed",
-            "last_event_at": "2026-03-10T08:03:00Z",
-            "tokens": {
-              "input": 100,
-              "output": 40,
-              "total": 140
-            }
-          }
-        }
-      ],
-      "retrying": [
-        {
-          "issue_id": "lin_124",
-          "issue_identifier": "SYM-124",
-          "attempt": 2,
-          "due_at": "2026-03-10T08:05:00Z",
-          "workspace_path": "/tmp/.../SYM-124",
-          "error": "orchestrator_restarted"
-        }
-      ]
-    }
+`apps/api/symphony/orchestrator/core.py` for replacing direct adapter construction with factory usage.
 
-The Angular route tree introduced in Milestone 5 should end up conceptually like this:
+`apps/api/symphony/api/views.py` for preserving thin HTTP request/response handling while the backend implementation changes underneath.
 
-    /              -> dashboard overview
-    /issues/:id    -> issue runtime detail
-    /runs          -> active runs and retry queue
+`apps/api/tests/unit/tracker/` and `apps/api/tests/unit/api/` for focused regression coverage.
 
-If a later milestone needs to add more routes or tracker-mutation controls, document them here as they are introduced rather than leaving them implicit in the source tree.
+`docs/SPEC.md` and `docs/development.md` for repository-facing documentation cleanup.
 
-For local frontend development after Milestone 5, `apps/web/proxy.conf.json` proxies `/api/*` requests from Angular dev-server to `http://127.0.0.1:8000`, which keeps the browser app same-origin from the developer’s perspective while preserving Django as the owner of the runtime API surface.
+The key external facts that should be treated as locked for this plan are these. Plane server-to-server calls use a deployment-specific base URL in self-hosted installations, not a single cloud hostname. API authentication uses `X-API-Key`. Issue reads live under `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`. Comments live under `/comments/`. Issue links live under `/links/`. Those facts came from the 2026-03-11 Context7 research and should be rechecked only if the implementation uncovers a documented mismatch.
 
 ## Interfaces and Dependencies
 
-`docs/SPEC.md` remains the normative behavior contract. `docs/ROADMAP.md` is the prioritization source for this plan. `docs/SPEC_GAPS.md` is the authoritative gap audit that must be updated as milestones close.
+In `apps/api/symphony/tracker/interfaces.py`, define:
 
-The backend should keep using Python 3.12, Django, `ruff`, `mypy`, and pytest as described in `AGENTS.md`. The frontend should keep using Angular standalone components, strict TypeScript, Tailwind, ESLint, Prettier, and Vitest.
+    class TrackerReadClient(Protocol):
+        def fetch_candidate_issues(self) -> list[Issue]: ...
+        def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]: ...
+        def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]: ...
 
-Revision note (2026-03-10 / Codex): Updated the ExecPlan after a broader re-audit showed that Milestones 1 through 4 were already implemented. Recorded the re-run focused pytest results for Milestones 2-4, marked those milestones complete, and synchronized the living-document sections to match the actual codebase state.
+    class TrackerMutationBackend(Protocol):
+        def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None: ...
+        def list_workflow_states(self) -> list[TrackerWorkflowState]: ...
+        def create_comment(self, issue_id: str, body: str) -> TrackerComment: ...
+        def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference: ...
+        def create_pull_request_link(
+            self,
+            *,
+            issue_id: str,
+            title: str,
+            url: str,
+            subtitle: str | None,
+            metadata: Mapping[str, JsonScalar],
+        ) -> TrackerIssueLink: ...
 
-For Milestones 1 through 4, keep `apps/api/symphony/orchestrator/core.py` as the single owner of live runtime state and policy decisions. `apps/api/symphony/observability/logging.py` should remain the sole formatting boundary for structured backend logs. `apps/api/symphony/orchestrator/recovery.py` should remain a serializer/deserializer module rather than becoming a second orchestrator. `apps/api/symphony/workflow/config.py` should remain the typed home for workflow-derived settings, including any new observability configuration.
+In `apps/api/symphony/tracker/factory.py`, define:
 
-For Milestone 5, introduce explicit Angular application structure under `apps/web/src/app` rather than continuing to inline the app in `apps/web/src/main.ts`. At minimum, create a route definition module and standalone feature entrypoints for dashboard, issue detail, and runs. Shared HTTP access should live in `apps/web/src/app/shared` so each feature does not reimplement fetch logic or response normalization. Prefer a small typed client around the existing backend endpoints over ad hoc `fetch` calls spread across components.
+    def build_tracker_read_client(config: ServiceConfig) -> TrackerReadClient: ...
+    def build_tracker_mutation_backend(config: ServiceConfig) -> TrackerMutationBackend: ...
 
-For Milestone 6, define a stable tracker write contract in the tracker integration layer before exposing any HTTP surface. One acceptable shape is a protocol or service in `apps/api/symphony/tracker/` with explicit methods for adding comments, changing state, and attaching pull-request metadata, plus normalized result types and error codes. Any HTTP or CLI surface added on top of that contract should delegate to the same service and should not embed tracker-specific mutation logic directly in views.
+`build_tracker_mutation_service(config: ServiceConfig)` should remain in `apps/api/symphony/tracker/write_service.py`, but it must call `build_tracker_mutation_backend(...)` instead of constructing tracker clients directly.
 
-Revision Note: 2026-03-10 / Codex. Replaced the placeholder active plan with a roadmap-derived ExecPlan so the tasks described in `docs/ROADMAP.md` are now sequenced into concrete milestones with repository context, commands, validation, and documentation-sync requirements.
+In `apps/api/symphony/workflow/config.py`, define at minimum:
+
+    @dataclass(slots=True, frozen=True)
+    class LinearTrackerConfig:
+        kind: Literal["linear"]
+        endpoint: str
+        api_key: str | None
+        project_slug: str | None
+        active_states: tuple[str, ...]
+        terminal_states: tuple[str, ...]
+
+    @dataclass(slots=True, frozen=True)
+    class PlaneTrackerConfig:
+        kind: Literal["plane"]
+        api_base_url: str
+        api_key: str | None
+        workspace_slug: str | None
+        project_id: str | None
+        active_states: tuple[str, ...]
+        terminal_states: tuple[str, ...]
+
+    TrackerConfig = LinearTrackerConfig | PlaneTrackerConfig
+
+In `apps/api/symphony/tracker/write_contract.py`, the neutral mutation scope and pull request link types must look like this at the end of the refactor:
+
+    @dataclass(slots=True, frozen=True)
+    class TrackerIssueReference:
+        id: str
+        identifier: str
+        state_id: str
+        state_name: str
+        workflow_scope_id: str
+        project_ref: str | None
+
+    @dataclass(slots=True, frozen=True)
+    class TrackerWorkflowState:
+        id: str
+        name: str
+        workflow_scope_id: str
+
+    @dataclass(slots=True, frozen=True)
+    class TrackerIssueLink:
+        id: str
+        title: str
+        url: str
+        subtitle: str | None
+        metadata: dict[str, JsonScalar]
+
+In `apps/api/symphony/tracker/plane_client.py`, define:
+
+    @dataclass(slots=True)
+    class PlaneTrackerClient(TrackerReadClient, TrackerMutationBackend):
+        tracker_config: PlaneTrackerConfig
+        timeout_ms: int = DEFAULT_PLANE_TIMEOUT_MS
+        transport: PlaneTransport | None = None
+
+This client must be the single owner of Plane URL construction, authentication headers, payload parsing, pagination handling, and Plane-specific exception mapping.
+
+Plan revision note: 2026-03-11 / Codex. Replaced the completed roadmap closeout plan with a new active ExecPlan focused on introducing a tracker adapter framework and a Plane self-host integration path, because the repository’s next major change is no longer roadmap closeout work but a tracker abstraction and second adapter implementation.
