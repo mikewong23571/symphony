@@ -591,6 +591,21 @@ class Orchestrator:
                 running_entry.last_reported_input_tokens = event.usage.input_tokens
                 running_entry.last_reported_output_tokens = event.usage.output_tokens
                 running_entry.last_reported_total_tokens = event.usage.total_tokens
+                logger.debug(
+                    "token_count_updated event=%s issue=%s input=%d output=%d total=%d",
+                    event.event,
+                    issue_identifier,
+                    event.usage.input_tokens,
+                    event.usage.output_tokens,
+                    event.usage.total_tokens,
+                )
+            elif event.usage is not None:
+                logger.debug(
+                    "token_count_skipped event=%s issue=%s reason=delta_only total=%d",
+                    event.event,
+                    issue_identifier,
+                    event.usage.total_tokens,
+                )
 
             rate_limits = _extract_rate_limits(event.payload)
             if rate_limits is not None:

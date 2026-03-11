@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
@@ -12,6 +13,8 @@ from .client import (
     send_protocol_message,
 )
 from .events import AgentRuntimeEvent, TurnResult, extract_usage_snapshot, utcnow
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_UNSUPPORTED_TOOL_ERROR = "unsupported_tool_call"
 DEFAULT_USER_INPUT_ERROR = "turn_input_required"
@@ -86,6 +89,17 @@ async def stream_turn(
             raw_message_event_name if isinstance(raw_message_event_name, str) else None
         )
         usage = extract_usage_snapshot(message, event_name=message_event_name)
+        if usage is not None:
+            logger.debug(
+                "codex_usage_extracted method=%s is_absolute=%s input=%d output=%d total=%d",
+                message_event_name or "unknown",
+                usage.is_absolute_total,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.total_tokens,
+            )
+        else:
+            logger.debug("codex_message_no_usage method=%s", message_event_name or "unknown")
 
         if _is_turn_completed(message):
             await _emit_runtime_event(
