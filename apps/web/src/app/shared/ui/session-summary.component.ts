@@ -25,9 +25,9 @@ import { IssueSessionSummaryViewModel } from "../lib/runtime-types";
   styles: [
     `
       .session-title {
-        font-size: 1.5rem;
+        font-size: 1.125rem;
         font-weight: 600;
-        margin: 0.5rem 0 0;
+        margin: 0 0 0.25rem;
       }
       mat-list {
         padding: 0;
