@@ -485,7 +485,9 @@ type RefreshState =
 export class DashboardPageComponent {
   private readonly runtimeSession = inject(RuntimeSessionService);
   private readonly destroyRef = inject(DestroyRef);
-  private readonly runtimeState = this.runtimeSession.watchState(this.destroyRef);
+  private readonly runtimeState = this.runtimeSession.watchState(
+    this.destroyRef
+  );
 
   readonly expandedIssues = signal(new Set<string>());
   readonly refreshState = signal<RefreshState>({ kind: "idle" });

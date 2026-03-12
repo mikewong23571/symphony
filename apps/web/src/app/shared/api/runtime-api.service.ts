@@ -27,22 +27,28 @@ export class RuntimeApiService {
   loadStateSnapshot(): Observable<RuntimeStateApiResponse> {
     return this.http
       .get<RuntimeStateApiResponse>("/api/v1/state")
-      .pipe(catchError((error: unknown) => throwError(() => toRuntimeUiError(error))));
+      .pipe(
+        catchError((error: unknown) =>
+          throwError(() => toRuntimeUiError(error))
+        )
+      );
   }
 
   loadDashboard(): Observable<DashboardViewModel> {
     return this.loadStateSnapshot().pipe(
-      map((response) => presentDashboardSnapshot(response)),
+      map((response) => presentDashboardSnapshot(response))
     );
   }
 
   loadRuns(): Observable<RunsViewModel> {
     return this.loadStateSnapshot().pipe(
-      map((response) => presentRunsSnapshot(response)),
+      map((response) => presentRunsSnapshot(response))
     );
   }
 
-  loadIssueSnapshot(issueIdentifier: string): Observable<RuntimeIssueApiResponse> {
+  loadIssueSnapshot(
+    issueIdentifier: string
+  ): Observable<RuntimeIssueApiResponse> {
     return this.http
       .get<RuntimeIssueApiResponse>(
         `/api/v1/${encodeURIComponent(issueIdentifier)}`

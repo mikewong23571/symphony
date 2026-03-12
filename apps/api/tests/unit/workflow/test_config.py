@@ -431,6 +431,17 @@ def test_validate_dispatch_config_surfaces_plane_tracker_field_errors(
             MissingTrackerProjectIDError,
             "tracker.project_id is required when tracker.kind is 'plane'.",
         ),
+        (
+            {
+                "kind": "plane",
+                "api_base_url": "https://plane.example",
+                "workspace_slug": "workspace",
+                "project_id": "project-123",
+                "api_key": "$PLANE_API_KEY",
+            },
+            MissingTrackerAPIKeyError,
+            "tracker.api_key is required when tracker.kind is 'plane'.",
+        ),
     ],
 )
 def test_validate_dispatch_config_surfaces_precise_errors_for_unresolved_plane_env_tokens(
@@ -472,7 +483,7 @@ def test_validate_dispatch_config_accepts_minimal_valid_linear_config() -> None:
     assert isinstance(service_config.tracker, LinearTrackerConfig)
 
 
-def test_validate_dispatch_config_rejects_fully_populated_plane_tracker_until_supported() -> None:
+def test_validate_dispatch_config_accepts_fully_populated_plane_tracker() -> None:
     service_config = build_service_config(
         build_definition(
             {
@@ -487,8 +498,7 @@ def test_validate_dispatch_config_rejects_fully_populated_plane_tracker_until_su
         )
     )
 
-    with pytest.raises(
-        UnsupportedTrackerKindError,
-        match="tracker.kind must be set to the supported tracker kind 'linear'.",
-    ):
-        validate_dispatch_config(service_config)
+    validate_dispatch_config(service_config)
+
+    assert isinstance(service_config, ServiceConfig)
+    assert isinstance(service_config.tracker, PlaneTrackerConfig)
