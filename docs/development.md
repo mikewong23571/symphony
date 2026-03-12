@@ -28,6 +28,8 @@
    export DJANGO_SETTINGS_MODULE=config.settings.local
    export DJANGO_ALLOWED_HOSTS='*'
    export LINEAR_API_KEY=...
+   # Optional when testing Plane-backed config or adapter paths:
+   export PLANE_API_KEY=...
    ```
 
 4. If you want to run the orchestrator, create a repository-local `WORKFLOW.md`
@@ -160,8 +162,45 @@ cd apps/api
 - `--port` enables the runtime HTTP server. Omitting it disables the listener.
 - `--host` defaults to `127.0.0.1`. Use `0.0.0.0` only when you want the
   sidecar reachable from other machines.
-- A valid Linear configuration (`LINEAR_API_KEY` + workflow tracker settings)
-  is required for real issue dispatching.
+- The workflow `tracker` section is kind-specific: Linear uses
+  `endpoint` / `project_slug`, while Plane uses `api_base_url` /
+  `workspace_slug` / `project_id`.
+
+#### Plane self-host workflow example
+
+Use this front matter shape when exercising a self-hosted Plane deployment:
+
+```md
+---
+tracker:
+  kind: plane
+  api_base_url: $PLANE_API_BASE_URL
+  api_key: $PLANE_API_KEY
+  workspace_slug: $PLANE_WORKSPACE
+  project_id: $PLANE_PROJECT_ID
+  active_states: Todo, In Progress
+  terminal_states: Done, Canceled
+---
+# Prompt body
+Continue working on {{ issue.identifier }}.
+```
+
+Example environment bootstrap:
+
+```sh
+export PLANE_API_BASE_URL=https://plane.example.com
+export PLANE_API_KEY=plane_api_example
+export PLANE_WORKSPACE=engineering
+export PLANE_PROJECT_ID=88c2d97c-a6ad-4012-b526-5577c0d7c769
+```
+
+`api_base_url` points at the root of your self-hosted Plane deployment.
+`workspace_slug` and `project_id` map directly to
+`/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`.
+
+The environment variable names above (`PLANE_API_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE`,
+`PLANE_PROJECT_ID`) are conventional — the runtime only sees the resolved string value, so any
+name works as long as you reference it via `$VAR_NAME` in the workflow front matter.
 
 ---
 
