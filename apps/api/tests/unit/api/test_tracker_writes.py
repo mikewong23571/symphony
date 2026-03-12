@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 from django.test import Client
 from symphony.api.views import _build_tracker_mutation_service
+from symphony.tracker import PlaneTransportResponse
 from symphony.tracker.write_contract import (
     TrackerComment,
     TrackerCommentRequest,
@@ -71,6 +73,77 @@ class FakeTrackerMutationService:
                 metadata=dict(request.metadata),
             ),
         )
+
+
+class RecordingPlaneTransport:
+    def __init__(self, responses: list[PlaneTransportResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None,
+        timeout_ms: int,
+    ) -> PlaneTransportResponse:
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(headers),
+                "query_params": dict(query_params),
+                "json_body": None if json_body is None else dict(json_body),
+                "timeout_ms": timeout_ms,
+            }
+        )
+        if not self.responses:
+            raise AssertionError("Test transport expected another configured response.")
+        return self.responses.pop(0)
+
+
+def write_plane_workflow(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        """---
+tracker:
+  kind: plane
+  api_base_url: https://plane.example/self-hosted
+  api_key: plane-token
+  workspace_slug: engineering
+  project_id: project-123
+codex:
+  command: codex app-server
+---
+# Prompt body
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def make_plane_issue_payload(
+    *,
+    issue_id: str,
+    sequence_id: int,
+    state_id: str,
+    state_name: str,
+) -> dict[str, object]:
+    return {
+        "id": issue_id,
+        "sequence_id": sequence_id,
+        "name": f"Issue {sequence_id}",
+        "description_stripped": f"Description {sequence_id}",
+        "priority": "high",
+        "state": {"id": state_id, "name": state_name},
+        "project": {"id": "project-123", "identifier": "ENG"},
+        "labels": [],
+        "created_at": "2026-03-01T12:00:00Z",
+        "updated_at": "2026-03-02T12:00:00Z",
+    }
 
 
 @pytest.fixture
@@ -324,6 +397,151 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
         }
     }
     assert backend.issue_link_calls == 0
+
+
+def test_tracker_comment_endpoint_uses_plane_workflow_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = write_plane_workflow(tmp_path / "runtime" / "WORKFLOW.md")
+    transport = RecordingPlaneTransport(
+        [
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=201,
+                body=json.dumps(
+                    {
+                        "id": "comment-123",
+                        "comment_stripped": "Ready for review",
+                        "url": "https://plane.example/comments/comment-123",
+                    }
+                ),
+            ),
+        ]
+    )
+
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    _build_tracker_mutation_service.cache_clear()
+
+    try:
+        response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/comments",
+            data=json.dumps({"body": "Ready for review"}),
+            content_type="application/json",
+        )
+    finally:
+        _build_tracker_mutation_service.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operation": "comment",
+        "status": "applied",
+        "issue": {"id": "issue-123", "identifier": "ENG-123"},
+        "comment": {
+            "id": "comment-123",
+            "body": "Ready for review",
+            "url": "https://plane.example/comments/comment-123",
+        },
+    }
+    assert [call["method"] for call in transport.calls] == ["GET", "POST"]
+    assert transport.calls[1]["url"].endswith(
+        "/projects/project-123/work-items/issue-123/comments/"
+    )
+    assert transport.calls[1]["json_body"] == {"comment_html": "<p>Ready for review</p>"}
+
+
+def test_tracker_transition_endpoint_uses_plane_workflow_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = write_plane_workflow(tmp_path / "runtime" / "WORKFLOW.md")
+    transport = RecordingPlaneTransport(
+        [
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    [
+                        {"id": "state-todo", "name": "Todo", "project": {"id": "project-123"}},
+                        {
+                            "id": "state-progress",
+                            "name": "In Progress",
+                            "project": {"id": "project-123"},
+                        },
+                    ]
+                ),
+            ),
+            PlaneTransportResponse(status_code=200, body=json.dumps({"id": "issue-123"})),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    make_plane_issue_payload(
+                        issue_id="issue-123",
+                        sequence_id=123,
+                        state_id="state-progress",
+                        state_name="In Progress",
+                    )
+                ),
+            ),
+        ]
+    )
+
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    _build_tracker_mutation_service.cache_clear()
+
+    try:
+        response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/transition",
+            data=json.dumps({"target_state": "In Progress"}),
+            content_type="application/json",
+        )
+    finally:
+        _build_tracker_mutation_service.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "operation": "state_transition",
+        "status": "applied",
+        "issue": {"id": "issue-123", "identifier": "ENG-123"},
+        "transition": {"from_state": "Todo", "to_state": "In Progress"},
+    }
+    assert [call["method"] for call in transport.calls] == ["GET", "GET", "PATCH", "GET"]
+    assert transport.calls[2]["url"].endswith("/projects/project-123/work-items/issue-123/")
+    assert transport.calls[2]["json_body"] == {"state": "state-progress"}
 
 
 def test_build_tracker_mutation_service_uses_env_workflow_path(

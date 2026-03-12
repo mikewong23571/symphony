@@ -34,16 +34,20 @@ class RecordingTransport:
     def __call__(
         self,
         *,
+        method: str,
         url: str,
         headers: Mapping[str, str],
         query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None,
         timeout_ms: int,
     ) -> PlaneTransportResponse:
         self.calls.append(
             {
+                "method": method,
                 "url": url,
                 "headers": dict(headers),
                 "query_params": dict(query_params),
+                "json_body": None if json_body is None else dict(json_body),
                 "timeout_ms": timeout_ms,
             }
         )
@@ -95,6 +99,19 @@ def make_issue_payload(
     if blocked_by_issues is not None:
         payload["blocked_by_issues"] = blocked_by_issues
     return payload
+
+
+def make_state_payload(
+    *,
+    state_id: str,
+    state_name: str,
+    project_id: str = "project-123",
+) -> dict[str, object]:
+    return {
+        "id": state_id,
+        "name": state_name,
+        "project": {"id": project_id},
+    }
 
 
 def test_build_plane_issue_collection_url_preserves_base_subpath_and_quotes_segments() -> None:
@@ -155,6 +172,7 @@ def test_fetch_issue_page_sends_auth_headers_and_parses_next_offset() -> None:
         transport.calls[0]["url"]
         == "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/project-123/issues/"
     )
+    assert transport.calls[0]["method"] == "GET"
     assert transport.calls[0]["headers"] == {
         "Accept": "application/json",
         "X-API-Key": "plane-token",
@@ -165,6 +183,7 @@ def test_fetch_issue_page_sends_auth_headers_and_parses_next_offset() -> None:
         "expand": ["state", "labels", "project"],
         "state": ["state-1", "state-2"],
     }
+    assert transport.calls[0]["json_body"] is None
     assert transport.calls[0]["timeout_ms"] == 30_000
 
 
@@ -322,6 +341,66 @@ def test_fetch_candidate_issues_uses_cursor_pagination_and_filters_active_states
     assert transport.calls[1]["query_params"] == {
         "per_page": DEFAULT_PLANE_PAGE_SIZE,
         "cursor": "50:1:0",
+        "expand": "state,project,labels,blocked_by_issues",
+    }
+
+
+def test_fetch_candidate_issues_follows_legacy_next_offsets() -> None:
+    transport = RecordingTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 2,
+                        "next": (
+                            "https://plane.example/self-hosted/api/v1/workspaces/engineering/"
+                            "projects/project-123/issues/?limit=50&offset=50"
+                        ),
+                        "results": [
+                            make_issue_payload(
+                                issue_id="issue-1",
+                                sequence_id=1,
+                                name="First candidate",
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 2,
+                        "next": None,
+                        "results": [
+                            make_issue_payload(
+                                issue_id="issue-2",
+                                sequence_id=2,
+                                name="Second candidate",
+                                state_id="state-progress",
+                                state_name="In Progress",
+                            )
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issues = client.fetch_candidate_issues()
+
+    assert [issue.identifier for issue in issues] == ["ENG-1", "ENG-2"]
+    assert transport.calls[0]["query_params"] == {
+        "per_page": DEFAULT_PLANE_PAGE_SIZE,
+        "expand": "state,project,labels,blocked_by_issues",
+    }
+    assert transport.calls[1]["query_params"] == {
+        "limit": DEFAULT_PLANE_PAGE_SIZE,
+        "offset": 50,
         "expand": "state,project,labels,blocked_by_issues",
     }
 
@@ -510,6 +589,101 @@ def test_get_issue_reference_queries_by_human_identifier() -> None:
     }
 
 
+def test_get_issue_reference_matches_bare_project_ids_with_requested_identifier_prefix() -> None:
+    transport = RecordingTransport(
+        response=PlaneTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "count": 1,
+                    "next_cursor": None,
+                    "results": [
+                        {
+                            **make_issue_payload(
+                                issue_id="issue-421",
+                                sequence_id=421,
+                                name="Lookup issue",
+                                state_id="state-progress",
+                                state_name="In Progress",
+                            ),
+                            "project": "0f9d8f40-a120-4fd9-9f5f-603d0ea28421",
+                        }
+                    ],
+                }
+            ),
+        )
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue = client.get_issue_reference(" ENG-421 ")
+
+    assert issue is not None
+    assert issue.id == "issue-421"
+    assert issue.identifier == "ENG-421"
+    assert issue.state_id == "state-progress"
+
+
+def test_get_issue_reference_follows_legacy_next_offsets() -> None:
+    transport = RecordingTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 2,
+                        "next": (
+                            "https://plane.example/self-hosted/api/v1/workspaces/engineering/"
+                            "projects/project-123/issues/?limit=50&offset=50"
+                        ),
+                        "results": [
+                            make_issue_payload(
+                                issue_id="issue-1",
+                                sequence_id=1,
+                                name="First issue",
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 2,
+                        "next": None,
+                        "results": [
+                            make_issue_payload(
+                                issue_id="issue-42",
+                                sequence_id=42,
+                                name="Lookup issue",
+                                state_id="state-progress",
+                                state_name="In Progress",
+                            )
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue = client.get_issue_reference("ENG-42")
+
+    assert issue is not None
+    assert issue.id == "issue-42"
+    assert transport.calls[0]["query_params"] == {
+        "per_page": DEFAULT_PLANE_PAGE_SIZE,
+        "expand": "state,project,labels,blocked_by_issues",
+    }
+    assert transport.calls[1]["query_params"] == {
+        "limit": DEFAULT_PLANE_PAGE_SIZE,
+        "offset": 50,
+        "expand": "state,project,labels,blocked_by_issues",
+    }
+
+
 def test_get_issue_reference_returns_none_for_blank_or_missing_identifier() -> None:
     transport = RecordingTransport(
         response=PlaneTransportResponse(
@@ -593,3 +767,213 @@ def test_get_issue_reference_raises_for_missing_project_id(
 
     with pytest.raises(PlanePayloadError, match="project.id"):
         client.get_issue_reference("ENG-1")
+
+
+def test_list_workflow_states_fetches_project_states() -> None:
+    transport = RecordingTransport(
+        response=PlaneTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                [
+                    make_state_payload(state_id="state-todo", state_name="Todo"),
+                    make_state_payload(state_id="state-progress", state_name="In Progress"),
+                ]
+            ),
+        )
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    states = client.list_workflow_states()
+
+    assert [(state.id, state.name, state.workflow_scope_id) for state in states] == [
+        ("state-todo", "Todo", "project-123"),
+        ("state-progress", "In Progress", "project-123"),
+    ]
+    assert transport.calls == [
+        {
+            "method": "GET",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/"
+                "projects/project-123/states/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": None,
+            "timeout_ms": 30_000,
+        }
+    ]
+
+
+def test_list_workflow_states_rejects_malformed_payload() -> None:
+    client = PlaneTrackerClient(
+        make_tracker_config(),
+        transport=RecordingTransport(
+            response=PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps({"results": [{"id": "state-todo"}]}),
+            )
+        ),
+    )
+
+    with pytest.raises(PlanePayloadError, match="missing name"):
+        client.list_workflow_states()
+
+
+def test_create_comment_posts_comment_html_and_normalizes_response() -> None:
+    transport = RecordingTransport(
+        response=PlaneTransportResponse(
+            status_code=201,
+            body=json.dumps(
+                {
+                    "id": "comment-123",
+                    "comment_stripped": "Ready for review\nShip it <soon>",
+                    "url": "https://plane.example/comments/comment-123",
+                }
+            ),
+        )
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    comment = client.create_comment("issue-123", "Ready for review\nShip it <soon>")
+
+    assert comment.id == "comment-123"
+    assert comment.body == "Ready for review\nShip it <soon>"
+    assert comment.url == "https://plane.example/comments/comment-123"
+    assert transport.calls == [
+        {
+            "method": "POST",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/comments/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": {"comment_html": "<p>Ready for review<br />Ship it &lt;soon&gt;</p>"},
+            "timeout_ms": 30_000,
+        }
+    ]
+
+
+def test_create_comment_uses_request_body_when_response_omits_comment_text() -> None:
+    client = PlaneTrackerClient(
+        make_tracker_config(),
+        transport=RecordingTransport(
+            response=PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps({"id": "comment-123", "url": None}),
+            )
+        ),
+    )
+
+    comment = client.create_comment("issue-123", "Fallback body")
+
+    assert comment.body == "Fallback body"
+    assert comment.url is None
+
+
+def test_create_comment_rejects_malformed_payload() -> None:
+    client = PlaneTrackerClient(
+        make_tracker_config(),
+        transport=RecordingTransport(
+            response=PlaneTransportResponse(
+                status_code=201,
+                body=json.dumps({"comment_stripped": "Ready for review"}),
+            )
+        ),
+    )
+
+    with pytest.raises(PlanePayloadError, match="missing id"):
+        client.create_comment("issue-123", "Ready for review")
+
+
+def test_update_issue_state_patches_work_item_and_refetches_issue() -> None:
+    transport = RecordingTransport(
+        responses=[
+            PlaneTransportResponse(status_code=200, body=json.dumps({"id": "issue-123"})),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    make_issue_payload(
+                        issue_id="issue-123",
+                        sequence_id=123,
+                        name="Transitioned issue",
+                        state_id="state-progress",
+                        state_name="In Progress",
+                    )
+                ),
+            ),
+        ]
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue = client.update_issue_state("issue-123", "state-progress")
+
+    assert issue.id == "issue-123"
+    assert issue.identifier == "ENG-123"
+    assert issue.state_id == "state-progress"
+    assert issue.state_name == "In Progress"
+    assert transport.calls == [
+        {
+            "method": "PATCH",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": {"state": "state-progress"},
+            "timeout_ms": 30_000,
+        },
+        {
+            "method": "GET",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/issues/issue-123/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {"expand": "state,project,labels,blocked_by_issues"},
+            "json_body": None,
+            "timeout_ms": 30_000,
+        },
+    ]
+
+
+def test_update_issue_state_surfaces_refetch_payload_errors() -> None:
+    client = PlaneTrackerClient(
+        make_tracker_config(),
+        transport=RecordingTransport(
+            responses=[
+                PlaneTransportResponse(status_code=200, body=json.dumps({"id": "issue-123"})),
+                PlaneTransportResponse(
+                    status_code=200,
+                    body=json.dumps(
+                        {
+                            "id": "issue-123",
+                            "sequence_id": 123,
+                            "name": "Bad transitioned issue",
+                            "state": {"name": "In Progress"},
+                            "project": {"id": "project-123", "identifier": "ENG"},
+                            "labels": [],
+                            "created_at": "2026-03-01T12:00:00Z",
+                            "updated_at": "2026-03-02T12:00:00Z",
+                        }
+                    ),
+                ),
+            ]
+        ),
+    )
+
+    with pytest.raises(PlanePayloadError, match="state.id"):
+        client.update_issue_state("issue-123", "state-progress")

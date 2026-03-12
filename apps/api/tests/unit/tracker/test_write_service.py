@@ -5,6 +5,7 @@ import math
 from collections.abc import Iterator, Mapping
 
 import pytest
+from symphony.tracker import PlaneTrackerClient
 from symphony.tracker.linear_client import LinearAPIRequestError
 from symphony.tracker.write_contract import (
     TrackerAttachment,
@@ -26,7 +27,7 @@ from symphony.tracker.write_service import (
     TrackerMutationService,
     build_tracker_mutation_service,
 )
-from symphony.workflow import MissingTrackerWorkspaceSlugError, UnsupportedTrackerKindError
+from symphony.workflow import MissingTrackerWorkspaceSlugError
 from symphony.workflow.config import build_service_config
 from symphony.workflow.loader import WorkflowDefinition
 
@@ -341,7 +342,7 @@ def test_tracker_pull_request_result_accepts_mixed_legacy_attachment_fields() ->
     assert result.metadata == {"status": "open"}
 
 
-def test_build_tracker_mutation_service_rejects_valid_plane_config_with_typed_error() -> None:
+def test_build_tracker_mutation_service_builds_plane_backend() -> None:
     config = build_service_config(
         WorkflowDefinition(
             config={
@@ -359,11 +360,10 @@ def test_build_tracker_mutation_service_rejects_valid_plane_config_with_typed_er
         env={},
     )
 
-    with pytest.raises(
-        UnsupportedTrackerKindError,
-        match="tracker.kind must be set to the supported tracker kind 'linear'.",
-    ):
-        build_tracker_mutation_service(config)
+    service = build_tracker_mutation_service(config)
+
+    assert isinstance(service.backend, PlaneTrackerClient)
+    assert service.project_ref == "project-123"
 
 
 def test_build_tracker_mutation_service_surfaces_plane_field_errors() -> None:

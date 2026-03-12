@@ -72,6 +72,21 @@ def test_normalize_plane_issue_accepts_project_identifier_override() -> None:
     assert issue.labels == ("ops",)
 
 
+def test_normalize_plane_issue_uses_override_when_project_field_is_internal_id() -> None:
+    issue = normalize_plane_issue(
+        {
+            "id": "issue-9",
+            "sequence_id": 421,
+            "name": "Fallback project key",
+            "state": {"name": "Todo"},
+            "project": "0f9d8f40-a120-4fd9-9f5f-603d0ea28421",
+        },
+        project_identifier="ENG",
+    )
+
+    assert issue.identifier == "ENG-421"
+
+
 def test_normalize_plane_issue_accepts_missing_optional_fields() -> None:
     issue = normalize_plane_issue(
         {

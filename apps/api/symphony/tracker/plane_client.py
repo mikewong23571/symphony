@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from html import escape
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
@@ -12,12 +13,26 @@ from symphony.workflow.config import PlaneTrackerConfig
 
 from .models import Issue
 from .plane import PlanePayloadError, normalize_plane_issue
-from .write_contract import TrackerIssueReference
+from .write_contract import (
+    JsonScalar,
+    TrackerComment,
+    TrackerIssueLink,
+    TrackerIssueReference,
+    TrackerWorkflowState,
+)
 
 DEFAULT_PLANE_TIMEOUT_MS = 30_000
 DEFAULT_PLANE_PAGE_SIZE = 50
 PLANE_ISSUES_PATH_TEMPLATE = "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/"
 PLANE_ISSUE_PATH_TEMPLATE = f"{PLANE_ISSUES_PATH_TEMPLATE}{{issue_id}}/"
+PLANE_WORK_ITEMS_PATH_TEMPLATE = (
+    "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/work-items/"
+)
+PLANE_WORK_ITEM_PATH_TEMPLATE = f"{PLANE_WORK_ITEMS_PATH_TEMPLATE}{{work_item_id}}/"
+PLANE_WORK_ITEM_COMMENTS_PATH_TEMPLATE = f"{PLANE_WORK_ITEM_PATH_TEMPLATE}comments/"
+PLANE_PROJECT_STATES_PATH_TEMPLATE = (
+    "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/states/"
+)
 PLANE_ISSUE_EXPAND = "state,project,labels,blocked_by_issues"
 
 
@@ -36,6 +51,10 @@ class PlaneAPIRequestError(PlaneAPIError):
 class PlaneAPIStatusError(PlaneAPIError):
     code = "plane_api_status"
 
+    def __init__(self, message: str, *, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 @dataclass(slots=True, frozen=True)
 class PlaneTransportResponse:
@@ -47,9 +66,11 @@ class PlaneTransport(Protocol):
     def __call__(
         self,
         *,
+        method: str,
         url: str,
         headers: Mapping[str, str],
         query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None,
         timeout_ms: int,
     ) -> PlaneTransportResponse: ...
 
@@ -68,6 +89,10 @@ class PlaneTrackerClient:
     timeout_ms: int = DEFAULT_PLANE_TIMEOUT_MS
     transport: PlaneTransport | None = None
 
+    @property
+    def project_ref(self) -> str | None:
+        return self.tracker_config.project_id
+
     def fetch_candidate_issues(self) -> list[Issue]:
         return self.fetch_issues_by_states(self.tracker_config.active_states)
 
@@ -79,17 +104,19 @@ class PlaneTrackerClient:
         requested_state_names_lower = {state_name.lower() for state_name in requested_state_names}
         issues: list[Issue] = []
         cursor: str | None = None
+        offset: int | None = None
 
         while True:
-            page = self._fetch_cursor_issue_page(cursor=cursor)
+            page = self._fetch_paginated_issue_page(cursor=cursor, offset=offset)
             for item in page.items:
                 issue = normalize_plane_issue(item)
                 if issue.state.lower() in requested_state_names_lower:
                     issues.append(issue)
 
-            if page.next_cursor is None:
+            if page.next_cursor is None and page.next_offset is None:
                 return issues
             cursor = page.next_cursor
+            offset = None if cursor is not None else page.next_offset
 
     def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]:
         requested_issue_ids = _normalize_issue_ids(issue_ids)
@@ -112,14 +139,71 @@ class PlaneTrackerClient:
         if not normalized_issue_identifier:
             return None
 
-        issue_payload = self._find_issue_payload(normalized_issue_identifier)
+        project_identifier = _extract_identifier_project_key(normalized_issue_identifier)
+        issue_payload = self._find_issue_payload(
+            normalized_issue_identifier,
+            project_identifier=project_identifier,
+        )
         if issue_payload is None:
             return None
 
         return _normalize_issue_reference(
             issue_payload,
+            project_identifier=project_identifier,
             default_project_ref=self.tracker_config.project_id,
         )
+
+    def list_workflow_states(self) -> list[TrackerWorkflowState]:
+        payload = self._fetch_payload(
+            path=PLANE_PROJECT_STATES_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+            ),
+            query_params={},
+        )
+        return _extract_workflow_states(
+            payload,
+            default_project_ref=self.tracker_config.project_id,
+        )
+
+    def create_comment(self, issue_id: str, body: str) -> TrackerComment:
+        payload = self._fetch_json(
+            method="POST",
+            path=PLANE_WORK_ITEM_COMMENTS_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+                work_item_id=quote(issue_id, safe=""),
+            ),
+            query_params={},
+            json_body={"comment_html": _format_comment_html(body)},
+        )
+        return _extract_comment(payload, fallback_body=body)
+
+    def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference:
+        transport = self.transport or _default_plane_transport
+        self._send_request(
+            transport=transport,
+            method="PATCH",
+            path=PLANE_WORK_ITEM_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+                work_item_id=quote(issue_id, safe=""),
+            ),
+            query_params={},
+            json_body={"state": state_id},
+        )
+        return self._fetch_issue_reference_by_id(issue_id)
+
+    def create_issue_link(
+        self,
+        *,
+        issue_id: str,
+        title: str,
+        url: str,
+        subtitle: str | None,
+        metadata: Mapping[str, JsonScalar],
+    ) -> TrackerIssueLink:
+        raise PlaneAPIRequestError("Plane issue link mutations are not implemented.")
 
     def fetch_issue_page(
         self,
@@ -149,12 +233,34 @@ class PlaneTrackerClient:
         *,
         path: str,
         query_params: Mapping[str, object],
+        method: str = "GET",
+        json_body: Mapping[str, object] | None = None,
     ) -> Mapping[str, Any]:
+        payload = self._fetch_payload(
+            path=path,
+            query_params=query_params,
+            method=method,
+            json_body=json_body,
+        )
+        if not isinstance(payload, Mapping):
+            raise PlanePayloadError("Plane response body must be a JSON object.")
+        return payload
+
+    def _fetch_payload(
+        self,
+        *,
+        path: str,
+        query_params: Mapping[str, object],
+        method: str = "GET",
+        json_body: Mapping[str, object] | None = None,
+    ) -> Any:
         transport = self.transport or _default_plane_transport
         response = self._send_request(
             transport=transport,
+            method=method,
             path=path,
             query_params=query_params,
+            json_body=json_body,
         )
         if response is None:
             raise PlaneAPIRequestError("Plane API request failed.")
@@ -169,34 +275,57 @@ class PlaneTrackerClient:
         transport = self.transport or _default_plane_transport
         response = self._send_request(
             transport=transport,
+            method="GET",
             path=PLANE_ISSUE_PATH_TEMPLATE.format(
                 workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
                 project_id=quote(self.tracker_config.project_id or "", safe=""),
                 issue_id=quote(issue_id, safe=""),
             ),
             query_params=query_params,
+            json_body=None,
             allow_not_found=True,
         )
         if response is None:
             return None
-        return _decode_payload(response)
+        payload = _decode_payload(response)
+        if not isinstance(payload, Mapping):
+            raise PlanePayloadError("Plane response body must be a JSON object.")
+        return payload
+
+    def _fetch_issue_reference_by_id(self, issue_id: str) -> TrackerIssueReference:
+        payload = self._fetch_json(
+            path=PLANE_ISSUE_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+                issue_id=quote(issue_id, safe=""),
+            ),
+            query_params={"expand": PLANE_ISSUE_EXPAND},
+        )
+        return _normalize_issue_reference(
+            payload,
+            default_project_ref=self.tracker_config.project_id,
+        )
 
     def _send_request(
         self,
         *,
         transport: PlaneTransport,
+        method: str,
         path: str,
         query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None = None,
         allow_not_found: bool = False,
     ) -> PlaneTransportResponse | None:
         try:
             response = transport(
+                method=method,
                 url=_join_base_url(self.tracker_config.api_base_url or "", path),
                 headers={
                     "Accept": "application/json",
                     "X-API-Key": self.tracker_config.api_key or "",
                 },
                 query_params=query_params,
+                json_body=json_body,
                 timeout_ms=self.timeout_ms,
             )
         except PlaneAPIError:
@@ -207,17 +336,37 @@ class PlaneTrackerClient:
         if allow_not_found and response.status_code == 404:
             return None
         if response.status_code < 200 or response.status_code >= 300:
-            raise PlaneAPIStatusError(f"Plane API responded with HTTP {response.status_code}.")
+            raise PlaneAPIStatusError(
+                f"Plane API responded with HTTP {response.status_code}.",
+                status_code=response.status_code,
+            )
 
         return response
 
-    def _fetch_cursor_issue_page(self, *, cursor: str | None) -> PlaneIssuePage:
-        query_params: dict[str, object] = {
-            "per_page": DEFAULT_PLANE_PAGE_SIZE,
-            "expand": PLANE_ISSUE_EXPAND,
-        }
+    def _fetch_paginated_issue_page(
+        self,
+        *,
+        cursor: str | None,
+        offset: int | None,
+    ) -> PlaneIssuePage:
+        query_params: dict[str, object]
         if cursor is not None:
-            query_params["cursor"] = cursor
+            query_params = {
+                "per_page": DEFAULT_PLANE_PAGE_SIZE,
+                "cursor": cursor,
+                "expand": PLANE_ISSUE_EXPAND,
+            }
+        elif offset is not None:
+            query_params = {
+                "limit": DEFAULT_PLANE_PAGE_SIZE,
+                "offset": offset,
+                "expand": PLANE_ISSUE_EXPAND,
+            }
+        else:
+            query_params = {
+                "per_page": DEFAULT_PLANE_PAGE_SIZE,
+                "expand": PLANE_ISSUE_EXPAND,
+            }
 
         payload = self._fetch_json(
             path=PLANE_ISSUES_PATH_TEMPLATE.format(
@@ -228,19 +377,29 @@ class PlaneTrackerClient:
         )
         return _extract_issue_page(payload)
 
-    def _find_issue_payload(self, issue_identifier: str) -> Mapping[str, Any] | None:
+    def _find_issue_payload(
+        self,
+        issue_identifier: str,
+        *,
+        project_identifier: str | None,
+    ) -> Mapping[str, Any] | None:
         # Plane has no server-side filter by identifier, so we scan all pages until we find a match.
         cursor: str | None = None
+        offset: int | None = None
         while True:
-            page = self._fetch_cursor_issue_page(cursor=cursor)
+            page = self._fetch_paginated_issue_page(cursor=cursor, offset=offset)
             for item in page.items:
-                normalized_issue = normalize_plane_issue(item)
+                normalized_issue = normalize_plane_issue(
+                    item,
+                    project_identifier=project_identifier,
+                )
                 if normalized_issue.identifier == issue_identifier:
                     return item
 
-            if page.next_cursor is None:
+            if page.next_cursor is None and page.next_offset is None:
                 return None
             cursor = page.next_cursor
+            offset = None if cursor is not None else page.next_offset
 
 
 def build_plane_issue_collection_url(tracker_config: PlaneTrackerConfig) -> str:
@@ -255,13 +414,25 @@ def build_plane_issue_collection_url(tracker_config: PlaneTrackerConfig) -> str:
 
 def _default_plane_transport(
     *,
+    method: str,
     url: str,
     headers: Mapping[str, str],
     query_params: Mapping[str, object],
+    json_body: Mapping[str, object] | None,
     timeout_ms: int,
 ) -> PlaneTransportResponse:
     request_url = _append_query_params(url, query_params)
-    request = Request(request_url, headers=dict(headers), method="GET")
+    request_headers = dict(headers)
+    request_data: bytes | None = None
+    if json_body is not None:
+        request_headers["Content-Type"] = "application/json"
+        request_data = json.dumps(json_body).encode("utf-8")
+    request = Request(
+        request_url,
+        headers=request_headers,
+        data=request_data,
+        method=method,
+    )
 
     try:
         with urlopen(request, timeout=timeout_ms / 1000) as response:
@@ -319,16 +490,11 @@ def _normalize_query_param_value(key: str, value: object) -> str | None:
     raise PlaneAPIRequestError(f"Plane request contains malformed query parameter: {key}.")
 
 
-def _decode_payload(response: PlaneTransportResponse) -> Mapping[str, Any]:
+def _decode_payload(response: PlaneTransportResponse) -> Any:
     try:
-        payload = json.loads(response.body)
+        return json.loads(response.body)
     except json.JSONDecodeError as exc:
         raise PlanePayloadError("Plane response body must be valid JSON.") from exc
-
-    if not isinstance(payload, Mapping):
-        raise PlanePayloadError("Plane response body must be a JSON object.")
-
-    return payload
 
 
 def _extract_issue_page(payload: Mapping[str, Any]) -> PlaneIssuePage:
@@ -352,6 +518,54 @@ def _extract_issue_page(payload: Mapping[str, Any]) -> PlaneIssuePage:
         next_cursor=next_cursor,
         next_offset=_extract_next_offset(payload.get("next")),
         count=count,
+    )
+
+
+def _extract_workflow_states(
+    payload: Any,
+    *,
+    default_project_ref: str | None,
+) -> list[TrackerWorkflowState]:
+    raw_states: object
+    if isinstance(payload, list):
+        raw_states = payload
+    elif isinstance(payload, Mapping):
+        raw_states = payload.get("results")
+        if raw_states is None:
+            raw_states = payload.get("states")
+        if raw_states is None:
+            raw_states = payload.get("nodes")
+        if not isinstance(raw_states, list):
+            raise PlanePayloadError("Plane states response is missing results.")
+    else:
+        raise PlanePayloadError("Plane states response must be a JSON object or array.")
+
+    workflow_states: list[TrackerWorkflowState] = []
+    for raw_state in raw_states:
+        if not isinstance(raw_state, Mapping):
+            raise PlanePayloadError("Plane states response contains a malformed result.")
+        workflow_states.append(
+            TrackerWorkflowState(
+                id=_require_string(raw_state, "id", context="Plane state response"),
+                name=_require_string(raw_state, "name", context="Plane state response"),
+                workflow_scope_id=_extract_issue_project_ref(
+                    raw_state,
+                    default_project_ref=default_project_ref,
+                ),
+            )
+        )
+    return workflow_states
+
+
+def _extract_comment(
+    payload: Mapping[str, Any],
+    *,
+    fallback_body: str,
+) -> TrackerComment:
+    return TrackerComment(
+        id=_require_string(payload, "id", context="Plane comment response"),
+        body=_optional_string(payload.get("comment_stripped")) or fallback_body,
+        url=_optional_string(payload.get("url")),
     )
 
 
@@ -411,9 +625,10 @@ def _normalize_issue_ids(issue_ids: Sequence[str]) -> list[str]:
 def _normalize_issue_reference(
     payload: Mapping[str, Any],
     *,
+    project_identifier: str | None = None,
     default_project_ref: str | None,
 ) -> TrackerIssueReference:
-    issue = normalize_plane_issue(payload)
+    issue = normalize_plane_issue(payload, project_identifier=project_identifier)
     state_id = _extract_issue_state_id(payload)
     project_ref = _extract_issue_project_ref(payload, default_project_ref=default_project_ref)
     return TrackerIssueReference(
@@ -460,3 +675,30 @@ def _extract_issue_project_ref(
     if default_project_ref is not None and default_project_ref.strip():
         return default_project_ref.strip()
     raise PlanePayloadError("Plane issue payload is missing project.id.")
+
+
+def _extract_identifier_project_key(issue_identifier: str) -> str | None:
+    prefix, separator, _ = issue_identifier.rpartition("-")
+    if not separator:
+        return None
+    normalized_prefix = prefix.strip()
+    return normalized_prefix or None
+
+
+def _require_string(payload: Mapping[str, Any], key: str, *, context: str) -> str:
+    value = _optional_string(payload.get(key))
+    if value is None:
+        raise PlanePayloadError(f"{context} is missing {key}.")
+    return value
+
+
+def _optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _format_comment_html(body: str) -> str:
+    escaped_lines = [escape(line) for line in body.splitlines()] or [""]
+    return f"<p>{'<br />'.join(escaped_lines)}</p>"

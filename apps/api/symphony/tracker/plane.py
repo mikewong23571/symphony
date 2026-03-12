@@ -36,7 +36,7 @@ def normalize_plane_issue(
     if state is None:
         raise PlanePayloadError("Plane issue payload is missing state.name.")
 
-    resolved_project_identifier = project_identifier or _extract_project_identifier(payload)
+    resolved_project_identifier = _extract_project_identifier(payload) or project_identifier
     if resolved_project_identifier is None:
         raise PlanePayloadError("Plane issue payload is missing project.identifier.")
 
@@ -103,16 +103,12 @@ def _extract_state_name(payload: Mapping[str, Any]) -> str | None:
 
 
 def _extract_project_identifier(payload: Mapping[str, Any]) -> str | None:
-    project_value = (
-        payload.get("project")
-        or payload.get("project_detail")
-        or payload.get("projectDetail")
-        or payload.get("project_identifier")
-        or payload.get("projectIdentifier")
-    )
-    if isinstance(project_value, Mapping):
-        return _optional_string(project_value.get("identifier"))
-    return _optional_string(project_value)
+    for key in ("project", "project_detail", "projectDetail"):
+        project_value = payload.get(key)
+        if isinstance(project_value, Mapping):
+            return _optional_string(project_value.get("identifier"))
+
+    return _optional_string(payload.get("project_identifier") or payload.get("projectIdentifier"))
 
 
 def _normalize_priority(value: Any) -> int | None:

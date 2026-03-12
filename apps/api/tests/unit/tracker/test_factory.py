@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from symphony.tracker import (
     LinearTrackerClient,
+    PlaneTrackerClient,
     TrackerRequestFailedError,
     build_tracker_mutation_backend,
     build_tracker_read_client,
@@ -20,6 +21,25 @@ def make_service_config() -> ServiceConfig:
                     "kind": "linear",
                     "api_key": "linear-token",
                     "project_slug": "symphony",
+                },
+                "codex": {"command": "codex app-server"},
+            },
+            prompt_template="Prompt body",
+        ),
+        env={},
+    )
+
+
+def make_plane_service_config() -> ServiceConfig:
+    return build_service_config(
+        WorkflowDefinition(
+            config={
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example",
+                    "api_key": "plane-token",
+                    "workspace_slug": "workspace",
+                    "project_id": "project-123",
                 },
                 "codex": {"command": "codex app-server"},
             },
@@ -101,3 +121,20 @@ def test_build_tracker_mutation_backend_surfaces_plane_field_errors() -> None:
         raise AssertionError(
             "Expected build_tracker_mutation_backend() to raise a typed Plane field error."
         )
+
+
+def test_build_tracker_mutation_backend_returns_plane_adapter() -> None:
+    backend = build_tracker_mutation_backend(make_plane_service_config())
+
+    assert isinstance(backend, PlaneTrackerClient)
+    assert backend.project_ref == "project-123"
+
+
+def test_build_tracker_mutation_backend_normalizes_plane_request_errors() -> None:
+    backend = build_tracker_mutation_backend(make_plane_service_config())
+
+    assert isinstance(backend, PlaneTrackerClient)
+    backend.transport = lambda **_: (_ for _ in ()).throw(OSError("boom"))
+
+    with pytest.raises(TrackerRequestFailedError, match="Plane API request failed."):
+        backend.create_comment("issue-123", "Ready for review")
