@@ -21,6 +21,16 @@ from .linear_client import (
     LinearTransportResponse,
 )
 from .models import Issue, IssueBlocker
+from .plane import PlanePayloadError, normalize_plane_issue
+from .plane_client import (
+    PlaneAPIError,
+    PlaneAPIRequestError,
+    PlaneAPIStatusError,
+    PlaneIssuePage,
+    PlaneTrackerClient,
+    PlaneTransportResponse,
+    build_plane_issue_collection_url,
+)
 from .write_contract import (
     TrackerAttachment,
     TrackerComment,
@@ -68,6 +78,13 @@ __all__ = [
     "LinearPayloadError",
     "LinearTrackerClient",
     "LinearTransportResponse",
+    "PlaneAPIError",
+    "PlaneAPIRequestError",
+    "PlaneAPIStatusError",
+    "PlaneIssuePage",
+    "PlanePayloadError",
+    "PlaneTrackerClient",
+    "PlaneTransportResponse",
     "TrackerMutationBackend",
     "TrackerAttachment",
     "TrackerComment",
@@ -91,8 +108,10 @@ __all__ = [
     "TrackerValidationError",
     "TrackerWorkflowState",
     "UPDATE_ISSUE_STATE_MUTATION",
+    "build_plane_issue_collection_url",
     "build_tracker_mutation_backend",
     "build_tracker_read_client",
     "build_tracker_mutation_service",
     "normalize_linear_issue",
+    "normalize_plane_issue",
 ]

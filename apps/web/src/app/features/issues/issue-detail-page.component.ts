@@ -292,15 +292,17 @@ export class IssueDetailPageComponent {
     null;
 
   readonly issueIdentifier = signal("unknown");
-  readonly issueResource = signal<RuntimeResourceConnection<RuntimeIssueApiResponse> | null>(
-    null
+  readonly issueResource =
+    signal<RuntimeResourceConnection<RuntimeIssueApiResponse> | null>(null);
+  readonly issueLoadState = computed(
+    () =>
+      this.issueResource()?.loadState() ?? {
+        snapshot: null,
+        error: null,
+        initialLoadPending: true,
+        refreshPending: false
+      }
   );
-  readonly issueLoadState = computed(() => this.issueResource()?.loadState() ?? {
-    snapshot: null,
-    error: null,
-    initialLoadPending: true,
-    refreshPending: false
-  });
   readonly state = computed<IssueState>(() => {
     const loadState = this.issueLoadState();
     if (loadState.initialLoadPending && loadState.snapshot === null) {
@@ -345,7 +347,8 @@ export class IssueDetailPageComponent {
         const identifier = params.get("id") ?? "unknown";
         this.issueIdentifier.set(identifier);
         this.currentIssueResource?.destroy();
-        this.currentIssueResource = this.runtimeSession.connectIssue(identifier);
+        this.currentIssueResource =
+          this.runtimeSession.connectIssue(identifier);
         this.issueResource.set(this.currentIssueResource);
       });
   }

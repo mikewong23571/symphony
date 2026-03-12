@@ -17,6 +17,8 @@ The most important outcome is architectural, not cosmetic. The repository must s
 - [x] 2026-03-11 03:22Z: Replaced the completed roadmap closeout plan with this new active ExecPlan focused on Plane integration and tracker abstraction.
 - [x] 2026-03-11 05:14Z: Completed Milestone 1. Added `apps/api/symphony/tracker/interfaces.py` and `apps/api/symphony/tracker/factory.py`, routed `apps/api/symphony/orchestrator/core.py` and `apps/api/symphony/tracker/write_service.py` through those shared seams, and added focused tests for the new factory path.
 - [x] 2026-03-11 05:14Z: Validated Milestone 1 in a sanitized shell environment that unsets inherited `LINEAR_API_KEY`, `SYMPHONY_RUNTIME_*`, `SYMPHONY_WORKFLOW_PATH`, and `VIRTUAL_ENV` exports. Evidence: pre-change baseline `114 passed in 4.12s`; post-change milestone suite `107 passed in 4.15s`; focused factory tests `2 passed in 0.04s`; combined regression check `109 passed in 4.12s`; `uv run ruff check ...` and `uv run mypy apps/api` both passed.
+- [x] 2026-03-12 01:04Z: Landed the `MIK-37` Plane read-foundation slice. Added `apps/api/symphony/tracker/plane.py` to normalize representative Plane issue payloads into the shared `Issue` model, added `apps/api/symphony/tracker/plane_client.py` with deterministic authenticated REST helpers for self-hosted Plane issue-list reads, and replaced the Plane tracker test placeholder with focused unit coverage.
+- [x] 2026-03-12 01:04Z: Validated the `MIK-37` slice with `uv run ruff check apps/api/symphony/tracker/plane.py apps/api/symphony/tracker/plane_client.py apps/api/symphony/tracker/__init__.py apps/api/tests/unit/tracker/test_plane.py apps/api/tests/unit/tracker/test_plane_client.py`, `uv run mypy apps/api`, and `uv run pytest apps/api/tests/unit/tracker/test_plane.py apps/api/tests/unit/tracker/test_plane_client.py -q`. Evidence: `ruff check` passed, `mypy` reported `Success: no issues found in 83 source files`, and the focused Plane suite reported `21 passed in 0.50s`.
 - [ ] Extend workflow configuration and validation so `tracker.kind: plane` is a first-class typed configuration with self-host-friendly fields.
 - [ ] Add a Plane adapter for issue reads, issue normalization, issue comments, issue state transitions, and pull request link attachment.
 - [ ] Update tests, docs, and operator-facing examples so the repository describes a pluggable tracker system instead of a Linear-only system.
@@ -37,6 +39,9 @@ The most important outcome is architectural, not cosmetic. The repository must s
 
 - Observation: the focused Milestone 1 pytest baselines are sensitive to inherited shell exports from another live Symphony workspace, even before tracker refactor code changes.
   Evidence: running the documented pre-change suite in the inherited shell failed with `16 failed, 98 passed in 3.60s` because `LINEAR_API_KEY` changed workflow-config expectations and `SYMPHONY_RUNTIME_*` plus `SYMPHONY_WORKFLOW_PATH` pointed at another workspace’s live runtime files; rerunning the exact suite with those variables unset passed with `114 passed in 4.12s`.
+
+- Observation: Plane’s public API docs now emphasize `/work-items/` endpoints and mark `/issues/` endpoints deprecated with a sunset date of 2026-03-31, while the current ticket sequence still targets `/issues/`-shaped issue reads.
+  Evidence: the official Plane API reference consulted on 2026-03-12 documents `work-items` as the primary surface and labels the older `issues` endpoints deprecated. The `MIK-37` slice therefore kept the issue-list path isolated to one tracker-local template so a future migration does not leak endpoint assumptions into orchestrator code.
 
 ## Decision Log
 
@@ -59,6 +64,10 @@ The most important outcome is architectural, not cosmetic. The repository must s
 - Decision: Preserve the runtime snapshot and Angular API response shapes for issue execution state unless a Plane requirement forces a change.
   Rationale: the runtime UI is already tracker-neutral enough. Changing it during the adapter refactor would expand the scope without helping the main integration goal.
   Date/Author: 2026-03-11 / Codex
+
+- Decision: Keep the `MIK-37` work at the adapter-foundation layer and avoid enabling Plane in the tracker factory or orchestrator until the higher-level read adapter lands.
+  Rationale: this ticket only needs payload normalization plus deterministic HTTP primitives. Deferring factory wiring keeps the scope bounded, avoids semantic changes in orchestrator code, and leaves a single migration point if the repository switches from `/issues/` to `/work-items/`.
+  Date/Author: 2026-03-12 / Codex
 
 ## Outcomes & Retrospective
 
