@@ -256,15 +256,32 @@ def build_service_config(
 
 
 def require_linear_tracker_config(tracker: TrackerConfig) -> LinearTrackerConfig:
+    _validate_tracker_config(tracker)
     if isinstance(tracker, PlaneTrackerConfig):
-        if not tracker.api_key:
-            raise MissingTrackerAPIKeyError(
-                "tracker.api_key is required when tracker.kind is 'plane'."
-            )
+        raise UnsupportedTrackerKindError(
+            "tracker.kind must be set to the supported tracker kind 'linear'."
+        )
 
+    return tracker
+
+
+def validate_dispatch_config(config: ServiceConfig) -> None:
+    _validate_tracker_config(config.tracker)
+
+    if not config.codex.command.strip():
+        raise MissingCodexCommandError("codex.command must be a non-empty shell command.")
+
+
+def _validate_tracker_config(tracker: TrackerConfig) -> None:
+    if isinstance(tracker, PlaneTrackerConfig):
         if not tracker.api_base_url:
             raise MissingTrackerAPIBaseURLError(
                 "tracker.api_base_url is required when tracker.kind is 'plane'."
+            )
+
+        if not tracker.api_key:
+            raise MissingTrackerAPIKeyError(
+                "tracker.api_key is required when tracker.kind is 'plane'."
             )
 
         if not tracker.workspace_slug:
@@ -276,10 +293,7 @@ def require_linear_tracker_config(tracker: TrackerConfig) -> LinearTrackerConfig
             raise MissingTrackerProjectIDError(
                 "tracker.project_id is required when tracker.kind is 'plane'."
             )
-
-        raise UnsupportedTrackerKindError(
-            "tracker.kind must be set to the supported tracker kind 'linear'."
-        )
+        return
 
     if tracker.kind != "linear":
         raise UnsupportedTrackerKindError(
@@ -295,15 +309,6 @@ def require_linear_tracker_config(tracker: TrackerConfig) -> LinearTrackerConfig
         raise MissingTrackerProjectSlugError(
             "tracker.project_slug is required when tracker.kind is 'linear'."
         )
-
-    return tracker
-
-
-def validate_dispatch_config(config: ServiceConfig) -> None:
-    require_linear_tracker_config(config.tracker)
-
-    if not config.codex.command.strip():
-        raise MissingCodexCommandError("codex.command must be a non-empty shell command.")
 
 
 def _get_section(config: dict[str, Any], key: str) -> Mapping[str, Any]:

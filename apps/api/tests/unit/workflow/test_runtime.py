@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import os
+import re
 import threading
 import time
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
-from symphony.workflow import UnsupportedTrackerKindError, WorkflowRuntime
+from symphony.workflow import (
+    MissingTrackerAPIBaseURLError,
+    MissingTrackerAPIKeyError,
+    MissingTrackerProjectIDError,
+    MissingTrackerWorkspaceSlugError,
+    PlaneTrackerConfig,
+    WorkflowRuntime,
+)
+
+
+class PlaneWorkflowOverrides(TypedDict, total=False):
+    api_base_url: str | None
+    api_key: str | None
+    workspace_slug: str | None
+    project_id: str | None
 
 
 def write_workflow(
@@ -32,22 +48,43 @@ def write_workflow(
     return path
 
 
-def write_plane_workflow(path: Path, *, prompt_template: str = "Prompt body") -> Path:
-    path.write_text(
-        (
-            "---\n"
-            "tracker:\n"
-            "  kind: plane\n"
-            "  api_base_url: https://plane.example\n"
-            "  api_key: plane-token\n"
-            "  workspace_slug: workspace\n"
-            "  project_id: project-123\n"
-            "---\n"
-            f"{prompt_template}\n"
-        ),
-        encoding="utf-8",
-    )
+def write_plane_workflow(
+    path: Path,
+    *,
+    prompt_template: str = "Prompt body",
+    api_base_url: str | None = "https://plane.example",
+    api_key: str | None = "plane-token",
+    workspace_slug: str | None = "workspace",
+    project_id: str | None = "project-123",
+) -> Path:
+    lines = ["---", "tracker:", "  kind: plane"]
+    if api_base_url is not None:
+        lines.append(f"  api_base_url: {api_base_url}")
+    if api_key is not None:
+        lines.append(f"  api_key: {api_key}")
+    if workspace_slug is not None:
+        lines.append(f"  workspace_slug: {workspace_slug}")
+    if project_id is not None:
+        lines.append(f"  project_id: {project_id}")
+    lines.extend(["---", prompt_template, ""])
+    path.write_text("\n".join(lines), encoding="utf-8")
     return path
+
+
+def write_plane_workflow_with_overrides(
+    path: Path,
+    *,
+    prompt_template: str = "Prompt body",
+    overrides: PlaneWorkflowOverrides,
+) -> Path:
+    return write_plane_workflow(
+        path,
+        prompt_template=prompt_template,
+        api_base_url=overrides.get("api_base_url", "https://plane.example"),
+        api_key=overrides.get("api_key", "plane-token"),
+        workspace_slug=overrides.get("workspace_slug", "workspace"),
+        project_id=overrides.get("project_id", "project-123"),
+    )
 
 
 def test_workflow_runtime_reloads_changed_workflow_file(tmp_path: Path) -> None:
@@ -165,17 +202,90 @@ def test_workflow_runtime_requires_explicit_initial_load(tmp_path: Path) -> None
         runtime.reload_if_changed()
 
 
-def test_workflow_runtime_rejects_fully_populated_plane_configs_until_supported(
-    tmp_path: Path,
-) -> None:
+def test_workflow_runtime_loads_fully_populated_plane_config(tmp_path: Path) -> None:
     workflow_path = write_plane_workflow(tmp_path / "WORKFLOW.md")
     runtime = WorkflowRuntime(workflow_path)
 
+    config = runtime.load_initial()
+
+    assert isinstance(config.tracker, PlaneTrackerConfig)
+    assert config.tracker.workspace_slug == "workspace"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_type", "message"),
+    [
+        (
+            {"api_base_url": None},
+            MissingTrackerAPIBaseURLError,
+            "tracker.api_base_url is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {"api_key": None},
+            MissingTrackerAPIKeyError,
+            "tracker.api_key is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {"workspace_slug": None},
+            MissingTrackerWorkspaceSlugError,
+            "tracker.workspace_slug is required when tracker.kind is 'plane'.",
+        ),
+        (
+            {"project_id": None},
+            MissingTrackerProjectIDError,
+            "tracker.project_id is required when tracker.kind is 'plane'.",
+        ),
+    ],
+)
+def test_workflow_runtime_surfaces_plane_validation_errors_on_initial_load(
+    tmp_path: Path,
+    overrides: PlaneWorkflowOverrides,
+    error_type: type[Exception],
+    message: str,
+) -> None:
+    workflow_path = write_plane_workflow_with_overrides(
+        tmp_path / "WORKFLOW.md",
+        overrides=overrides,
+    )
+    runtime = WorkflowRuntime(workflow_path)
+
     with pytest.raises(
-        UnsupportedTrackerKindError,
-        match="tracker.kind must be set to the supported tracker kind 'linear'.",
+        error_type,
+        match=re.escape(message),
     ):
         runtime.load_initial()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error_code"),
+    [
+        ({"api_base_url": None}, "missing_tracker_api_base_url"),
+        ({"api_key": None}, "missing_tracker_api_key"),
+        ({"workspace_slug": None}, "missing_tracker_workspace_slug"),
+        ({"project_id": None}, "missing_tracker_project_id"),
+    ],
+)
+def test_workflow_runtime_preserves_last_good_config_when_plane_reload_is_invalid(
+    tmp_path: Path,
+    overrides: PlaneWorkflowOverrides,
+    error_code: str,
+) -> None:
+    workflow_path = write_workflow(tmp_path / "WORKFLOW.md", prompt_template="Prompt body v1")
+    runtime = WorkflowRuntime(workflow_path)
+    runtime.load_initial()
+
+    write_plane_workflow_with_overrides(
+        workflow_path,
+        prompt_template="Prompt body invalid",
+        overrides=overrides,
+    )
+
+    changed = runtime.reload_if_changed()
+
+    assert changed is False
+    assert runtime.config.prompt_template == "Prompt body v1"
+    assert runtime.last_error is not None
+    assert runtime.last_error.code == error_code
 
 
 def test_workflow_runtime_watches_for_file_changes(tmp_path: Path) -> None:

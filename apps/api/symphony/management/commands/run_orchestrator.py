@@ -118,15 +118,17 @@ class Command(BaseCommand):
         http_server = self._start_http_server(host=bind_host, port=http_port)
 
         async def run() -> None:
-            orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
+            orchestrator: Orchestrator | None = None
             try:
+                orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
                 if run_once:
                     await orchestrator.run_once()
                     await orchestrator.wait_for_running_workers()
                 else:
                     await orchestrator.run_forever()
             finally:
-                await orchestrator.aclose()
+                if orchestrator is not None:
+                    await orchestrator.aclose()
 
         try:
             try:
@@ -134,6 +136,17 @@ class Command(BaseCommand):
             finally:
                 if http_server is not None:
                     http_server.close()
+        except WorkflowConfigError as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "startup_validation_failed",
+                fields={
+                    "error_code": exc.code,
+                    "message": exc.message,
+                },
+            )
+            raise CommandError(f"Startup failed ({exc.code}): {exc.message}") from exc
         except KeyboardInterrupt:
             self.stdout.write(self.style.WARNING("Orchestrator stopped by signal."))
 

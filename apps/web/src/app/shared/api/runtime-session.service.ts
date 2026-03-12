@@ -1,4 +1,10 @@
-import { DestroyRef, Injectable, Signal, WritableSignal, signal } from "@angular/core";
+import {
+  DestroyRef,
+  Injectable,
+  Signal,
+  WritableSignal,
+  signal
+} from "@angular/core";
 import { Observable, Subscription, tap } from "rxjs";
 
 import { RuntimeApiService } from "./runtime-api.service";
@@ -27,7 +33,9 @@ type RuntimeManagedResource<TSnapshot extends RuntimeManagedSnapshot> = {
   refreshQueued: boolean;
 };
 
-export interface RuntimeResourceHandle<TSnapshot extends RuntimeManagedSnapshot> {
+export interface RuntimeResourceHandle<
+  TSnapshot extends RuntimeManagedSnapshot
+> {
   loadState: Signal<RuntimeLoadState<TSnapshot>>;
   refresh: () => void;
 }
@@ -62,12 +70,11 @@ export class RuntimeSessionService {
   private readonly eventErrorListener = () => this.handleEventStreamError();
   private browserListenersActive = false;
   private eventSource: EventSource | null = null;
-  private eventSourceReconnectHandle: ReturnType<typeof globalThis.setTimeout> | null =
-    null;
+  private eventSourceReconnectHandle: ReturnType<
+    typeof globalThis.setTimeout
+  > | null = null;
 
-  constructor(
-    private readonly api: RuntimeApiService
-  ) {
+  constructor(private readonly api: RuntimeApiService) {
     this.stateResource = this.createResource("state", () =>
       this.api.loadStateSnapshot()
     );
@@ -93,13 +100,14 @@ export class RuntimeSessionService {
   ): RuntimeResourceConnection<RuntimeIssueApiResponse> {
     const existingResource = this.issueResources.get(issueIdentifier);
     const resource =
-      existingResource ??
-      this.createIssueResource(issueIdentifier);
+      existingResource ?? this.createIssueResource(issueIdentifier);
     return this.connectResource(resource);
   }
 
   requestRefresh(): Observable<RefreshReceiptViewModel> {
-    return this.api.requestRefresh().pipe(tap(() => this.refreshActiveResources()));
+    return this.api
+      .requestRefresh()
+      .pipe(tap(() => this.refreshActiveResources()));
   }
 
   private createIssueResource(
@@ -330,16 +338,26 @@ export class RuntimeSessionService {
   private handleInvalidation(event: RuntimeInvalidationEvent): void {
     const issueIdentifiers = event.issue_identifiers ?? [];
     const revision = typeof event.revision === "number" ? event.revision : null;
-    const stateRevision = getSnapshotRevision(this.stateResource.loadState().snapshot);
+    const stateRevision = getSnapshotRevision(
+      this.stateResource.loadState().snapshot
+    );
 
-    if (this.stateResource.watchCount > 0 && shouldRefreshForRevision(stateRevision, revision)) {
+    if (
+      this.stateResource.watchCount > 0 &&
+      shouldRefreshForRevision(stateRevision, revision)
+    ) {
       this.fetchResource(this.stateResource);
     }
 
     if (issueIdentifiers.length === 0) {
       for (const resource of this.issueResources.values()) {
-        const issueRevision = getSnapshotRevision(resource.loadState().snapshot);
-        if (resource.watchCount > 0 && shouldRefreshForRevision(issueRevision, revision)) {
+        const issueRevision = getSnapshotRevision(
+          resource.loadState().snapshot
+        );
+        if (
+          resource.watchCount > 0 &&
+          shouldRefreshForRevision(issueRevision, revision)
+        ) {
           this.fetchResource(resource);
         }
       }
@@ -412,7 +430,8 @@ export function parseRuntimeInvalidationEvent(
         typeof parsed.revision === "number" ? parsed.revision : undefined,
       issue_identifiers: Array.isArray(parsed.issue_identifiers)
         ? parsed.issue_identifiers.filter(
-            (value): value is string => typeof value === "string" && value.length > 0
+            (value): value is string =>
+              typeof value === "string" && value.length > 0
           )
         : undefined
     };

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from io import StringIO
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from django.core.management.base import CommandError
 from symphony.management.commands.run_orchestrator import Command
 from symphony.management.commands.run_orchestrator import Orchestrator as CommandOrchestrator
 from symphony.observability.runtime import get_runtime_observability_config
+from symphony.workflow import WORKFLOW_PATH_ENV_VAR
 
 MINIMAL_VALID_WORKFLOW = """---
 tracker:
@@ -33,12 +35,45 @@ tracker:
 """
 
 
+PLANE_WORKFLOW_MISSING_API_BASE_URL = """---
+tracker:
+  kind: plane
+  api_key: plane-token
+  workspace_slug: workspace
+  project_id: project-123
+---
+# Prompt body
+"""
+
+
+PLANE_WORKFLOW_MISSING_API_KEY = """---
+tracker:
+  kind: plane
+  api_base_url: https://plane.example
+  workspace_slug: workspace
+  project_id: project-123
+---
+# Prompt body
+"""
+
+
 PLANE_WORKFLOW_MISSING_WORKSPACE_SLUG = """---
 tracker:
   kind: plane
   api_base_url: https://plane.example
   api_key: plane-token
   project_id: project-123
+---
+# Prompt body
+"""
+
+
+PLANE_WORKFLOW_MISSING_PROJECT_ID = """---
+tracker:
+  kind: plane
+  api_base_url: https://plane.example
+  api_key: plane-token
+  workspace_slug: workspace
 ---
 # Prompt body
 """
@@ -88,6 +123,15 @@ observability:
 """
 
 
+@pytest.fixture(autouse=True)
+def allow_caplog_to_capture_symphony_logs() -> Generator[None, None, None]:
+    symphony_logger = logging.getLogger("symphony")
+    previous_propagate = symphony_logger.propagate
+    symphony_logger.propagate = True
+    yield
+    symphony_logger.propagate = previous_propagate
+
+
 class FakeHTTPServer:
     def __init__(self, *, url: str = "http://127.0.0.1:43123/") -> None:
         self.url = url
@@ -113,6 +157,33 @@ def fake_async_method(calls: list[str], name: str) -> object:
 def write_workflow(path: Path, *, contents: str = MINIMAL_VALID_WORKFLOW) -> Path:
     path.write_text(contents, encoding="utf-8")
     return path
+
+
+def install_log_event_recorder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[tuple[str, dict[str, object | None]]]:
+    events: list[tuple[str, dict[str, object | None]]] = []
+
+    def _record_event(
+        logger: logging.Logger,
+        level: int,
+        event: str,
+        *,
+        fields: dict[str, object | None],
+    ) -> None:
+        del logger, level
+        events.append((event, dict(fields)))
+
+    monkeypatch.setattr(
+        "symphony.management.commands.run_orchestrator.log_event",
+        _record_event,
+    )
+    return events
+
+
+@pytest.fixture(autouse=True)
+def clear_workflow_path_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(WORKFLOW_PATH_ENV_VAR, raising=False)
 
 
 def install_fake_http_server(
@@ -443,24 +514,31 @@ def test_run_orchestrator_loads_workflow_observability_settings(
 
 
 def test_run_orchestrator_rejects_negative_cli_port(
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     write_workflow(tmp_path / "WORKFLOW.md")
     monkeypatch.chdir(tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(CommandError, match=r"port must be an integer greater than or equal to 0"):
         call_command("run_orchestrator", "--port", "-1")
-    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+    assert events == [
+        (
+            "startup_validation_failed",
+            {
+                "error_code": "workflow_config_error",
+                "message": "port must be an integer greater than or equal to 0.",
+            },
+        )
+    ]
 
 
 def test_run_orchestrator_rejects_non_integer_port_option(
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     command = Command()
-    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(
         CommandError,
@@ -468,14 +546,22 @@ def test_run_orchestrator_rejects_non_integer_port_option(
     ):
         command.handle(port="abc")
 
-    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+    assert events == [
+        (
+            "startup_validation_failed",
+            {
+                "error_code": "workflow_config_error",
+                "message": "port must be an integer.",
+            },
+        )
+    ]
 
 
 def test_run_orchestrator_rejects_empty_cli_host(
-    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     command = Command()
-    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(
         CommandError,
@@ -483,7 +569,15 @@ def test_run_orchestrator_rejects_empty_cli_host(
     ):
         command.handle(host="   ")
 
-    assert "event=startup_validation_failed error_code=workflow_config_error" in caplog.text
+    assert events == [
+        (
+            "startup_validation_failed",
+            {
+                "error_code": "workflow_config_error",
+                "message": "host must not be empty.",
+            },
+        )
+    ]
 
 
 def test_run_orchestrator_survives_logging_sink_failures(
@@ -520,13 +614,12 @@ def test_run_orchestrator_survives_logging_sink_failures(
 
 
 def test_run_orchestrator_surfaces_http_server_bind_failures(
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     write_workflow(tmp_path / "WORKFLOW.md", contents=WORKFLOW_WITH_HTTP_PORT)
     monkeypatch.chdir(tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
     monkeypatch.setattr(
         "symphony.management.commands.run_orchestrator.start_runtime_http_server",
         lambda *, host, port: (_ for _ in ()).throw(OSError("address in use")),
@@ -534,7 +627,17 @@ def test_run_orchestrator_surfaces_http_server_bind_failures(
 
     with pytest.raises(CommandError, match=r"Startup failed \(http_server_error\):"):
         call_command("run_orchestrator", "--once")
-    assert "event=http_server_bind_failed host=127.0.0.1 port=43123" in caplog.text
+    assert events == [
+        (
+            "http_server_bind_failed",
+            {
+                "host": "127.0.0.1",
+                "port": 43123,
+                "error_code": "OSError",
+                "message": "address in use",
+            },
+        )
+    ]
 
 
 def test_run_orchestrator_fails_when_default_workflow_is_missing(
@@ -555,22 +658,22 @@ def test_run_orchestrator_fails_when_explicit_workflow_is_missing(tmp_path: Path
 
 
 def test_run_orchestrator_surfaces_workflow_parse_failures(
-    caplog: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     write_workflow(
         tmp_path / "WORKFLOW.md",
         contents="---\ntracker: [unterminated\n---\n# Prompt body\n",
     )
 
     monkeypatch.chdir(tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.management.commands.run_orchestrator")
 
     with pytest.raises(CommandError, match=r"Startup failed \(workflow_parse_error\):"):
         call_command("run_orchestrator")
-    assert "event=workflow_load_failed" in caplog.text
-    assert "error_code=workflow_parse_error" in caplog.text
+    assert len(events) == 1
+    assert events[0][0] == "workflow_load_failed"
+    assert events[0][1]["error_code"] == "workflow_parse_error"
 
 
 def test_run_orchestrator_surfaces_config_validation_failures(
@@ -593,25 +696,42 @@ tracker:
         call_command("run_orchestrator")
 
 
+@pytest.mark.parametrize(
+    ("contents", "error_code"),
+    [
+        (PLANE_WORKFLOW_MISSING_API_BASE_URL, "missing_tracker_api_base_url"),
+        (PLANE_WORKFLOW_MISSING_API_KEY, "missing_tracker_api_key"),
+        (PLANE_WORKFLOW_MISSING_WORKSPACE_SLUG, "missing_tracker_workspace_slug"),
+        (PLANE_WORKFLOW_MISSING_PROJECT_ID, "missing_tracker_project_id"),
+    ],
+)
 def test_run_orchestrator_surfaces_precise_plane_config_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    contents: str,
+    error_code: str,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     write_workflow(
         tmp_path / "WORKFLOW.md",
-        contents=PLANE_WORKFLOW_MISSING_WORKSPACE_SLUG,
+        contents=contents,
     )
 
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(CommandError, match=r"Startup failed \(missing_tracker_workspace_slug\):"):
-        call_command("run_orchestrator")
+    with pytest.raises(CommandError, match=rf"Startup failed \({error_code}\):"):
+        call_command("run_orchestrator", "--once")
+
+    assert len(events) == 1
+    assert events[0][0] == "workflow_load_failed"
+    assert events[0][1]["error_code"] == error_code
 
 
 def test_run_orchestrator_rejects_valid_plane_config_until_supported(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    events = install_log_event_recorder(monkeypatch)
     write_workflow(
         tmp_path / "WORKFLOW.md",
         contents=VALID_PLANE_WORKFLOW,
@@ -621,3 +741,13 @@ def test_run_orchestrator_rejects_valid_plane_config_until_supported(
 
     with pytest.raises(CommandError, match=r"Startup failed \(unsupported_tracker_kind\):"):
         call_command("run_orchestrator")
+
+    assert events == [
+        (
+            "startup_validation_failed",
+            {
+                "error_code": "unsupported_tracker_kind",
+                "message": "tracker.kind must be set to the supported tracker kind 'linear'.",
+            },
+        )
+    ]
