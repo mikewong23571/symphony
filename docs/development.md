@@ -198,6 +198,10 @@ export PLANE_PROJECT_ID=88c2d97c-a6ad-4012-b526-5577c0d7c769
 `workspace_slug` and `project_id` map directly to
 `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`.
 
+The environment variable names above (`PLANE_API_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE`,
+`PLANE_PROJECT_ID`) are conventional — the runtime only sees the resolved string value, so any
+name works as long as you reference it via `$VAR_NAME` in the workflow front matter.
+
 ---
 
 ## uv Tool Install

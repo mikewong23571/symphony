@@ -570,13 +570,13 @@ This section is intentionally redundant so a coding agent can implement the conf
 
 - `tracker.kind`: string, required, supported values `linear` or `plane`
 - `tracker.endpoint`: string, used only when `tracker.kind=linear`; default
-  `https://api.linear.app/graphql`
-- `tracker.api_base_url`: string, required when `tracker.kind=plane`
+  `https://api.linear.app/graphql`; ignored for `plane`
+- `tracker.api_base_url`: string, required when `tracker.kind=plane`; ignored for `linear`
 - `tracker.api_key`: string or `$VAR`; `LINEAR_API_KEY` is the implicit fallback only when
   `tracker.kind=linear` and the field is omitted
-- `tracker.project_slug`: string, required when `tracker.kind=linear`
-- `tracker.workspace_slug`: string, required when `tracker.kind=plane`
-- `tracker.project_id`: string, required when `tracker.kind=plane`
+- `tracker.project_slug`: string, required when `tracker.kind=linear`; ignored for `plane`
+- `tracker.workspace_slug`: string, required when `tracker.kind=plane`; ignored for `linear`
+- `tracker.project_id`: string, required when `tracker.kind=plane`; ignored for `linear`
 - `tracker.active_states`: list/string, default `Todo, In Progress`
 - `tracker.terminal_states`: list/string, default `Closed, Cancelled, Canceled, Duplicate, Done`
 - `polling.interval_ms`: integer, default `30000`
@@ -1206,7 +1206,8 @@ Plane-specific requirements for `tracker.kind == "plane"`:
 - Issue collection path:
   `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`
 - `tracker.workspace_slug` and `tracker.project_id` map directly to those path segments
-- Pagination follows the collection `next` URL and extracts the next `offset`
+- Pagination follows the `next_cursor` field in each response; iteration stops when `next_cursor`
+  is absent or empty
 - Page size default: `50`
 - Network timeout: `30000 ms`
 
@@ -2014,7 +2015,7 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - Candidate issue fetch uses active states and the configured project scope
 - Linear query uses the specified project filter field (`slugId`)
 - Plane issue collection URLs use `workspace_slug` and `project_id` path segments
-- Plane requests send `X-API-Key` and follow `next` offsets across pages
+- Plane requests send `X-API-Key` and follow `next_cursor` across pages
 - Empty `fetch_issues_by_states([])` returns empty without API call
 - Pagination preserves order across multiple pages
 - Blockers are normalized from inverse relations of type `blocks`
