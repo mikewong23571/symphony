@@ -30,6 +30,8 @@ PLANE_WORK_ITEMS_PATH_TEMPLATE = (
 )
 PLANE_WORK_ITEM_PATH_TEMPLATE = f"{PLANE_WORK_ITEMS_PATH_TEMPLATE}{{work_item_id}}/"
 PLANE_WORK_ITEM_COMMENTS_PATH_TEMPLATE = f"{PLANE_WORK_ITEM_PATH_TEMPLATE}comments/"
+PLANE_WORK_ITEM_LINKS_PATH_TEMPLATE = f"{PLANE_WORK_ITEM_PATH_TEMPLATE}links/"
+PLANE_WORK_ITEM_LINK_PATH_TEMPLATE = f"{PLANE_WORK_ITEM_LINKS_PATH_TEMPLATE}{{link_id}}/"
 PLANE_PROJECT_STATES_PATH_TEMPLATE = (
     "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/states/"
 )
@@ -196,7 +198,34 @@ class PlaneTrackerClient:
         subtitle: str | None,
         metadata: Mapping[str, JsonScalar],
     ) -> TrackerIssueLink:
-        raise PlaneAPIRequestError("Plane issue link mutations are not implemented.")
+        existing_issue_link = self._find_issue_link_by_url(issue_id=issue_id, url=url)
+        if existing_issue_link is not None:
+            if existing_issue_link.title == title:
+                return existing_issue_link
+            payload = self._fetch_json(
+                method="PATCH",
+                path=PLANE_WORK_ITEM_LINK_PATH_TEMPLATE.format(
+                    workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                    project_id=quote(self.tracker_config.project_id or "", safe=""),
+                    work_item_id=quote(issue_id, safe=""),
+                    link_id=quote(existing_issue_link.id, safe=""),
+                ),
+                query_params={},
+                json_body={"title": title},
+            )
+            return _extract_issue_link(payload, context="Plane link response")
+
+        payload = self._fetch_json(
+            method="POST",
+            path=PLANE_WORK_ITEM_LINKS_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+                work_item_id=quote(issue_id, safe=""),
+            ),
+            query_params={},
+            json_body={"title": title, "url": url},
+        )
+        return _extract_issue_link(payload, context="Plane link response")
 
     def fetch_issue_page(
         self,
@@ -367,6 +396,20 @@ class PlaneTrackerClient:
                 return None
             cursor = page.next_cursor
 
+    def _find_issue_link_by_url(self, *, issue_id: str, url: str) -> TrackerIssueLink | None:
+        payload = self._fetch_payload(
+            path=PLANE_WORK_ITEM_LINKS_PATH_TEMPLATE.format(
+                workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
+                project_id=quote(self.tracker_config.project_id or "", safe=""),
+                work_item_id=quote(issue_id, safe=""),
+            ),
+            query_params={},
+        )
+        for issue_link in _extract_issue_links(payload):
+            if issue_link.url == url:
+                return issue_link
+        return None
+
 
 def build_plane_issue_collection_url(tracker_config: PlaneTrackerConfig) -> str:
     return _join_base_url(
@@ -532,6 +575,30 @@ def _extract_comment(
         id=_require_string(payload, "id", context="Plane comment response"),
         body=_optional_string(payload.get("comment_stripped")) or fallback_body,
         url=_optional_string(payload.get("url")),
+    )
+
+
+def _extract_issue_links(payload: Any) -> list[TrackerIssueLink]:
+    if not isinstance(payload, list):
+        raise PlanePayloadError("Plane link response must be a JSON array.")
+    issue_links: list[TrackerIssueLink] = []
+    for raw_link in payload:
+        if not isinstance(raw_link, Mapping):
+            raise PlanePayloadError("Plane link response contains a malformed result.")
+        issue_links.append(_extract_issue_link(raw_link, context="Plane link response"))
+    return issue_links
+
+
+def _extract_issue_link(payload: Mapping[str, Any], *, context: str) -> TrackerIssueLink:
+    # Plane issue links accept only `title` and `url` on create. The response may include
+    # provider-owned preview metadata, but it is not caller-owned or safely round-trippable
+    # through Symphony's pull-request contract, so we normalize Plane links to id/title/url only.
+    return TrackerIssueLink(
+        id=_require_string(payload, "id", context=context),
+        title=_require_string(payload, "title", context=context),
+        url=_require_string(payload, "url", context=context),
+        subtitle=None,
+        metadata={},
     )
 
 

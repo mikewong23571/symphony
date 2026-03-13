@@ -737,6 +737,185 @@ def test_create_comment_rejects_malformed_payload() -> None:
         client.create_comment("issue-123", "Ready for review")
 
 
+def test_create_issue_link_posts_title_and_url_with_explicit_metadata_limitations() -> None:
+    transport = RecordingTransport(
+        responses=[
+            PlaneTransportResponse(status_code=200, body=json.dumps([])),
+            PlaneTransportResponse(
+                status_code=201,
+                body=json.dumps(
+                    {
+                        "id": "link-123",
+                        "title": "PR #1",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ),
+            ),
+        ]
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue_link = client.create_issue_link(
+        issue_id="issue-123",
+        title="PR #1",
+        url="https://github.com/acme/symphony/pull/1",
+        subtitle="Open",
+        metadata={"status": "open", "commit_count": 3},
+    )
+
+    assert issue_link.id == "link-123"
+    assert issue_link.title == "PR #1"
+    assert issue_link.url == "https://github.com/acme/symphony/pull/1"
+    assert issue_link.subtitle is None
+    assert issue_link.metadata == {}
+    assert transport.calls == [
+        {
+            "method": "GET",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/links/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": None,
+            "timeout_ms": 30_000,
+        },
+        {
+            "method": "POST",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/links/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": {
+                "title": "PR #1",
+                "url": "https://github.com/acme/symphony/pull/1",
+            },
+            "timeout_ms": 30_000,
+        },
+    ]
+
+
+def test_create_issue_link_reuses_existing_url_without_posting_duplicate() -> None:
+    transport = RecordingTransport(
+        response=PlaneTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                [
+                    {
+                        "id": "link-123",
+                        "title": "PR #1",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ]
+            ),
+        )
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue_link = client.create_issue_link(
+        issue_id="issue-123",
+        title="PR #1",
+        url="https://github.com/acme/symphony/pull/1",
+        subtitle="Merged",
+        metadata={"status": "merged"},
+    )
+
+    assert issue_link.id == "link-123"
+    assert issue_link.title == "PR #1"
+    assert issue_link.url == "https://github.com/acme/symphony/pull/1"
+    assert issue_link.subtitle is None
+    assert issue_link.metadata == {}
+    assert [call["method"] for call in transport.calls] == ["GET"]
+
+
+def test_create_issue_link_patches_existing_url_when_title_changes() -> None:
+    transport = RecordingTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    [
+                        {
+                            "id": "link-123",
+                            "title": "Old PR title",
+                            "url": "https://github.com/acme/symphony/pull/1",
+                            "metadata": {"provider": "github"},
+                        }
+                    ]
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "id": "link-123",
+                        "title": "PR #1",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ),
+            ),
+        ]
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issue_link = client.create_issue_link(
+        issue_id="issue-123",
+        title="PR #1",
+        url="https://github.com/acme/symphony/pull/1",
+        subtitle="Merged",
+        metadata={"status": "merged"},
+    )
+
+    assert issue_link.id == "link-123"
+    assert issue_link.title == "PR #1"
+    assert issue_link.url == "https://github.com/acme/symphony/pull/1"
+    assert issue_link.subtitle is None
+    assert issue_link.metadata == {}
+    assert transport.calls == [
+        {
+            "method": "GET",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/links/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": None,
+            "timeout_ms": 30_000,
+        },
+        {
+            "method": "PATCH",
+            "url": (
+                "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
+                "project-123/work-items/issue-123/links/link-123/"
+            ),
+            "headers": {
+                "Accept": "application/json",
+                "X-API-Key": "plane-token",
+            },
+            "query_params": {},
+            "json_body": {
+                "title": "PR #1",
+            },
+            "timeout_ms": 30_000,
+        },
+    ]
+
+
 def test_update_issue_state_patches_work_item_and_refetches_issue() -> None:
     transport = RecordingTransport(
         responses=[
