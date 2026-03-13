@@ -8,7 +8,7 @@ from symphony.tracker import (
     build_tracker_mutation_backend,
     build_tracker_read_client,
 )
-from symphony.workflow import MissingTrackerWorkspaceSlugError, UnsupportedTrackerKindError
+from symphony.workflow import MissingTrackerWorkspaceSlugError
 from symphony.workflow.config import ServiceConfig, build_service_config
 from symphony.workflow.loader import WorkflowDefinition
 
@@ -72,29 +72,11 @@ def test_build_tracker_mutation_backend_normalizes_linear_request_errors() -> No
         backend.create_comment("issue-123", "Ready for review")
 
 
-def test_build_tracker_read_client_rejects_valid_plane_config_with_typed_error() -> None:
-    config = build_service_config(
-        WorkflowDefinition(
-            config={
-                "tracker": {
-                    "kind": "plane",
-                    "api_base_url": "https://plane.example",
-                    "api_key": "plane-token",
-                    "workspace_slug": "workspace",
-                    "project_id": "project-123",
-                }
-            },
-            prompt_template="Prompt body",
-        ),
-        env={},
-    )
+def test_build_tracker_read_client_returns_plane_adapter() -> None:
+    client = build_tracker_read_client(make_plane_service_config())
 
-    try:
-        build_tracker_read_client(config)
-    except UnsupportedTrackerKindError as exc:
-        assert exc.message == "tracker.kind must be set to the supported tracker kind 'linear'."
-    else:
-        raise AssertionError("Expected build_tracker_read_client() to raise a typed config error.")
+    assert isinstance(client, PlaneTrackerClient)
+    assert client.project_ref == "project-123"
 
 
 def test_build_tracker_mutation_backend_surfaces_plane_field_errors() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -31,6 +31,7 @@ from symphony.observability.snapshots import parse_snapshot_timestamp
 from symphony.orchestrator import Orchestrator
 from symphony.orchestrator.core import CodexTotals, RunningEntry
 from symphony.orchestrator.recovery import load_recovery_state
+from symphony.tracker import PlaneTrackerClient, PlaneTransportResponse
 from symphony.tracker.models import Issue, IssueBlocker
 from symphony.workflow import WorkflowRuntime
 from symphony.workflow.config import (
@@ -95,6 +96,36 @@ class FakeTrackerClient:
 
     def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]:
         return list(self.terminal_issues)
+
+
+class RecordingPlaneTransport:
+    def __init__(self, responses: list[PlaneTransportResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None,
+        timeout_ms: int,
+    ) -> PlaneTransportResponse:
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(headers),
+                "query_params": dict(query_params),
+                "json_body": None if json_body is None else dict(json_body),
+                "timeout_ms": timeout_ms,
+            }
+        )
+        if not self.responses:
+            raise AssertionError("Test transport expected another configured response.")
+        return self.responses.pop(0)
 
 
 def build_issue(
@@ -167,6 +198,66 @@ def build_config(
         config["observability"] = observability
 
     return build_service_config(WorkflowDefinition(config=config, prompt_template="Prompt body"))
+
+
+def build_plane_config(
+    *,
+    tmp_path: Path,
+    before_remove: str | None = None,
+    after_run: str | None = None,
+    stall_timeout_ms: int = 300_000,
+    poll_interval_ms: int = 60_000,
+) -> ServiceConfig:
+    config: dict[str, object] = {
+        "tracker": {
+            "kind": "plane",
+            "api_base_url": "https://plane.example/self-hosted",
+            "api_key": "plane-token",
+            "workspace_slug": "engineering",
+            "project_id": "project-123",
+            "active_states": ["Todo", "In Progress"],
+            "terminal_states": ["Done"],
+        },
+        "workspace": {"root": str(tmp_path / "workspaces")},
+        "polling": {"interval_ms": poll_interval_ms},
+        "agent": {"max_concurrent_agents": 2, "max_retry_backoff_ms": 120_000},
+        "codex": {
+            "command": "codex app-server",
+            "turn_timeout_ms": 1_000,
+            "read_timeout_ms": 1_000,
+            "stall_timeout_ms": stall_timeout_ms,
+        },
+    }
+    hooks: dict[str, str] = {}
+    if before_remove is not None:
+        hooks["before_remove"] = before_remove
+    if after_run is not None:
+        hooks["after_run"] = after_run
+    if hooks:
+        config["hooks"] = hooks
+
+    return build_service_config(WorkflowDefinition(config=config, prompt_template="Prompt body"))
+
+
+def make_plane_issue_payload(
+    *,
+    issue_id: str,
+    sequence_id: int,
+    state_id: str,
+    state_name: str,
+) -> dict[str, object]:
+    return {
+        "id": issue_id,
+        "sequence_id": sequence_id,
+        "name": f"Issue {sequence_id}",
+        "description_stripped": f"Description {sequence_id}",
+        "priority": "high",
+        "state": {"id": state_id, "name": state_name},
+        "project": {"id": "project-123", "identifier": "ENG"},
+        "labels": [],
+        "created_at": "2026-03-01T12:00:00Z",
+        "updated_at": "2026-03-02T12:00:00Z",
+    }
 
 
 def write_runtime_workflow(
@@ -295,6 +386,77 @@ def test_orchestrator_builds_owned_tracker_client_via_factory(
     assert built_configs == [config]
 
 
+def test_orchestrator_dispatches_plane_issue_and_schedules_continuation_retry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issue = build_issue(issue_id="plane-issue-1", identifier="ENG-101")
+    config = build_plane_config(tmp_path=tmp_path)
+    transport = RecordingPlaneTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps({"count": 0, "next_cursor": None, "results": []}),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id=issue.id,
+                                sequence_id=101,
+                                state_id="state-progress",
+                                state_name=issue.state,
+                            )
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+
+    async def successful_worker_runner(**kwargs: object) -> AttemptResult:
+        dispatched_issue = cast(Issue, kwargs["issue"])
+        return AttemptResult(
+            status="succeeded",
+            issue=dispatched_issue,
+            attempt=None,
+            workspace_path=tmp_path / "workspaces" / dispatched_issue.identifier,
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            turns_run=1,
+            error_code=None,
+            message=None,
+        )
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(config=config, worker_runner=successful_worker_runner)
+        try:
+            assert isinstance(orchestrator.tracker_client, PlaneTrackerClient)
+
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+
+            assert issue.id not in orchestrator.state.running
+            assert issue.id in orchestrator.state.retry_attempts
+            assert orchestrator.state.retry_attempts[issue.id].attempt == 1
+            assert orchestrator.state.retry_attempts[issue.id].identifier == issue.identifier
+            assert issue.id in orchestrator.state.claimed
+            assert [call["headers"]["X-API-Key"] for call in transport.calls] == [
+                "plane-token",
+                "plane-token",
+            ]
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
 def test_orchestrator_cleans_workspace_when_success_returns_terminal_issue(tmp_path: Path) -> None:
     issue = build_issue()
     terminal_issue = build_issue(state="Done")
@@ -414,6 +576,112 @@ def test_orchestrator_reconcile_cleans_terminal_workspaces(tmp_path: Path) -> No
             workspace_manager=workspace_manager,
         )
         try:
+            await orchestrator.run_once()
+            await started.wait()
+            assert issue.id in orchestrator.state.running
+
+            await orchestrator.reconcile_running_issues()
+            await asyncio.sleep(0)
+
+            assert issue.id not in orchestrator.state.running
+            assert not workspace_manager.resolve_workspace_path(issue.identifier).exists()
+            assert after_run_marker.is_file()
+            assert marker_path.is_file()
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_orchestrator_reconcile_cleans_terminal_plane_workspaces(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    issue = build_issue(issue_id="plane-issue-1", identifier="ENG-101")
+    marker_path = tmp_path / "before_remove.marker"
+    after_run_marker = tmp_path / "after_run.marker"
+    config = build_plane_config(
+        tmp_path=tmp_path,
+        before_remove=f"touch {marker_path}",
+        after_run=f"touch {after_run_marker}",
+        stall_timeout_ms=1_000,
+    )
+    workspace_manager = WorkspaceManager(config.workspace.root)
+    workspace_manager.ensure_workspace(issue.identifier)
+    transport = RecordingPlaneTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps({"count": 0, "next_cursor": None, "results": []}),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id=issue.id,
+                                sequence_id=101,
+                                state_id="state-progress",
+                                state_name=issue.state,
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    make_plane_issue_payload(
+                        issue_id=issue.id,
+                        sequence_id=101,
+                        state_id="state-done",
+                        state_name="Done",
+                    )
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    started = asyncio.Event()
+
+    async def hanging_worker_runner(**kwargs: object) -> AttemptResult:
+        on_event = kwargs["on_event"]
+        worker_workspace_manager = kwargs["workspace_manager"]
+        assert callable(on_event)
+        assert isinstance(worker_workspace_manager, WorkspaceManager)
+        await on_event(
+            AgentRuntimeEvent(
+                event="session_started",
+                timestamp=datetime.now(UTC),
+                session_id="thr_123-turn_1",
+                thread_id="thr_123",
+                turn_id="turn_1",
+                codex_app_server_pid=321,
+                usage=None,
+                payload={"phase": "turn_started"},
+            )
+        )
+        started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            assert worker_workspace_manager.resolve_workspace_path(issue.identifier).exists()
+            after_run_marker.touch()
+            raise
+        raise AssertionError("unreachable")
+
+    async def run_test() -> None:
+        orchestrator = Orchestrator(
+            config=config,
+            worker_runner=hanging_worker_runner,
+            workspace_manager=workspace_manager,
+        )
+        try:
+            assert isinstance(orchestrator.tracker_client, PlaneTrackerClient)
+
             await orchestrator.run_once()
             await started.wait()
             assert issue.id in orchestrator.state.running

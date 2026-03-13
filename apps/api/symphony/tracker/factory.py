@@ -38,6 +38,8 @@ _T = TypeVar("_T")
 
 
 def build_tracker_read_client(config: ServiceConfig) -> TrackerReadClient:
+    if config.tracker.kind == "plane":
+        return _build_plane_tracker_client(config)
     return _build_linear_tracker_client(config)
 
 
@@ -49,6 +51,10 @@ def build_tracker_mutation_backend(config: ServiceConfig) -> TrackerMutationBack
 
 def _build_linear_tracker_client(config: ServiceConfig) -> LinearTrackerClient:
     return LinearTrackerClient(require_linear_tracker_config(config.tracker))
+
+
+def _build_plane_tracker_client(config: ServiceConfig) -> PlaneTrackerClient:
+    return PlaneTrackerClient(require_plane_tracker_config(config.tracker))
 
 
 def _build_linear_tracker_mutation_backend(config: ServiceConfig) -> TrackerMutationBackend:
