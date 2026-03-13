@@ -265,6 +265,16 @@ def require_linear_tracker_config(tracker: TrackerConfig) -> LinearTrackerConfig
     return tracker
 
 
+def require_plane_tracker_config(tracker: TrackerConfig) -> PlaneTrackerConfig:
+    _validate_tracker_config(tracker)
+    if not isinstance(tracker, PlaneTrackerConfig):
+        raise UnsupportedTrackerKindError(
+            "tracker.kind must be set to the supported tracker kind 'plane'."
+        )
+
+    return tracker
+
+
 def validate_dispatch_config(config: ServiceConfig) -> None:
     _validate_tracker_config(config.tracker)
 
