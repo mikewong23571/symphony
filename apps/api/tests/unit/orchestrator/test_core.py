@@ -392,6 +392,7 @@ def test_orchestrator_dispatches_plane_issue_and_schedules_continuation_retry(
 ) -> None:
     issue = build_issue(issue_id="plane-issue-1", identifier="ENG-101")
     config = build_plane_config(tmp_path=tmp_path)
+    monkeypatch.setattr("symphony.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
     transport = RecordingPlaneTransport(
         responses=[
             PlaneTransportResponse(

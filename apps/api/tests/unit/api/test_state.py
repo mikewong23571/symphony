@@ -315,6 +315,7 @@ def test_state_and_issue_endpoints_read_plane_backed_snapshot_from_orchestrator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr("symphony.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
     transport = RecordingPlaneTransport(
         responses=[
             PlaneTransportResponse(
