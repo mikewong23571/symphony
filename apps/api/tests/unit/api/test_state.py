@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import tempfile
-from collections.abc import Generator, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from django.test import Client
+from symphony.agent_runner import AttemptResult
 from symphony.observability.events import (
     clear_runtime_invalidations,
     publish_runtime_invalidation,
@@ -23,11 +24,13 @@ from symphony.observability.runtime import (
     clear_runtime_snapshot_file,
     clear_runtime_snapshot_provider,
     consume_runtime_refresh_request,
+    get_runtime_recovery_path,
     get_runtime_refresh_request_path,
     get_runtime_snapshot_path,
     publish_runtime_snapshot,
 )
 from symphony.orchestrator import Orchestrator
+from symphony.tracker import PlaneTrackerClient, PlaneTransportResponse
 from symphony.tracker.models import Issue
 from symphony.workflow.config import ServiceConfig, build_service_config
 from symphony.workflow.loader import WorkflowDefinition
@@ -44,6 +47,36 @@ class SilentTrackerClient:
         return []
 
 
+class RecordingPlaneTransport:
+    def __init__(self, responses: list[PlaneTransportResponse]) -> None:
+        self.responses = list(responses)
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, str],
+        query_params: Mapping[str, object],
+        json_body: Mapping[str, object] | None,
+        timeout_ms: int,
+    ) -> PlaneTransportResponse:
+        self.calls.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(headers),
+                "query_params": dict(query_params),
+                "json_body": None if json_body is None else dict(json_body),
+                "timeout_ms": timeout_ms,
+            }
+        )
+        if not self.responses:
+            raise AssertionError("Test transport expected another configured response.")
+        return self.responses.pop(0)
+
+
 @pytest.fixture(autouse=True)
 def clear_snapshot_state(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
     monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
@@ -54,11 +87,13 @@ def clear_snapshot_state(monkeypatch: pytest.MonkeyPatch) -> Generator[None, Non
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
     _clear_refresh_request_file_best_effort()
+    _clear_recovery_file_best_effort()
     yield
     clear_runtime_invalidations()
     clear_runtime_snapshot_provider()
     _clear_snapshot_file_best_effort()
     _clear_refresh_request_file_best_effort()
+    _clear_recovery_file_best_effort()
 
 
 def build_config(*, tmp_path: Path) -> ServiceConfig:
@@ -77,6 +112,49 @@ def build_config(*, tmp_path: Path) -> ServiceConfig:
             prompt_template="Prompt body",
         )
     )
+
+
+def build_plane_config(*, tmp_path: Path) -> ServiceConfig:
+    return build_service_config(
+        WorkflowDefinition(
+            config={
+                "tracker": {
+                    "kind": "plane",
+                    "api_base_url": "https://plane.example/self-hosted",
+                    "api_key": "plane-token",
+                    "workspace_slug": "engineering",
+                    "project_id": "project-123",
+                    "active_states": ["Todo", "In Progress"],
+                    "terminal_states": ["Done"],
+                },
+                "workspace": {"root": str(tmp_path / "workspaces")},
+                "agent": {"max_concurrent_agents": 2},
+                "codex": {"command": "codex app-server"},
+            },
+            prompt_template="Prompt body",
+        )
+    )
+
+
+def make_plane_issue_payload(
+    *,
+    issue_id: str,
+    sequence_id: int,
+    state_id: str,
+    state_name: str,
+) -> dict[str, object]:
+    return {
+        "id": issue_id,
+        "sequence_id": sequence_id,
+        "name": f"Issue {sequence_id}",
+        "description_stripped": f"Description {sequence_id}",
+        "priority": "high",
+        "state": {"id": state_id, "name": state_name},
+        "project": {"id": "project-123", "identifier": "ENG"},
+        "labels": [],
+        "created_at": "2026-03-01T12:00:00Z",
+        "updated_at": "2026-03-02T12:00:00Z",
+    }
 
 
 def fresh_snapshot_times(*, revision: int = 1) -> dict[str, str | int]:
@@ -227,6 +305,108 @@ def test_state_endpoint_reads_default_snapshot_path_across_processes(
             assert response.status_code == 200
             assert response.json()["counts"] == {"running": 0, "retrying": 0}
             assert response.json()["revision"] >= 1
+        finally:
+            await orchestrator.aclose()
+
+    asyncio.run(run_test())
+
+
+def test_state_and_issue_endpoints_read_plane_backed_snapshot_from_orchestrator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("symphony.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
+    transport = RecordingPlaneTransport(
+        responses=[
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps({"count": 0, "next_cursor": None, "results": []}),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="plane-issue-7",
+                                sequence_id=7,
+                                state_id="state-progress",
+                                state_name="In Progress",
+                            )
+                        ],
+                    }
+                ),
+            ),
+        ]
+    )
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+
+    async def successful_worker_runner(**kwargs: object) -> AttemptResult:
+        issue = cast(Issue, kwargs["issue"])
+        return AttemptResult(
+            status="succeeded",
+            issue=issue,
+            attempt=None,
+            workspace_path=tmp_path / "workspaces" / issue.identifier,
+            session_id="thr_123-turn_1",
+            thread_id="thr_123",
+            turn_id="turn_1",
+            turns_run=1,
+            error_code=None,
+            message=None,
+        )
+
+    orchestrator = Orchestrator(
+        config=build_plane_config(tmp_path=tmp_path),
+        worker_runner=successful_worker_runner,
+    )
+
+    async def run_test() -> None:
+        try:
+            assert isinstance(orchestrator.tracker_client, PlaneTrackerClient)
+
+            await orchestrator.run_once()
+            await orchestrator.wait_for_running_workers()
+            clear_runtime_snapshot_provider(orchestrator)
+
+            state_response = Client().get("/api/v1/state")
+            assert state_response.status_code == 200
+            state_payload = state_response.json()
+            assert state_payload["counts"] == {"running": 0, "retrying": 1}
+            assert state_payload["retrying"] == [
+                {
+                    "issue_id": "plane-issue-7",
+                    "issue_identifier": "ENG-7",
+                    "attempt": 1,
+                    "due_at": state_payload["retrying"][0]["due_at"],
+                    "error": None,
+                    "workspace_path": str(tmp_path / "workspaces" / "ENG-7"),
+                }
+            ]
+
+            issue_response = Client().get("/api/v1/ENG-7")
+            assert issue_response.status_code == 200
+            issue_payload = issue_response.json()
+            assert issue_payload["revision"] == state_payload["revision"]
+            assert isinstance(issue_payload["generated_at"], str)
+            assert issue_payload["expires_at"] == state_payload["expires_at"]
+            assert issue_payload["issue_identifier"] == "ENG-7"
+            assert issue_payload["issue_id"] == "plane-issue-7"
+            assert issue_payload["status"] == "retrying"
+            assert issue_payload["workspace"] == {"path": str(tmp_path / "workspaces" / "ENG-7")}
+            assert issue_payload["attempts"] == {"restart_count": 0, "current_retry_attempt": 1}
+            assert issue_payload["running"] is None
+            assert issue_payload["retry"] == {
+                "attempt": 1,
+                "due_at": state_payload["retrying"][0]["due_at"],
+                "error": None,
+            }
+            assert issue_payload["logs"] == {"codex_session_logs": []}
+            assert issue_payload["recent_events"] == []
+            assert issue_payload["last_error"] is None
+            assert issue_payload["tracked"] == {}
         finally:
             await orchestrator.aclose()
 
@@ -771,6 +951,10 @@ def _clear_refresh_request_file_best_effort() -> None:
         clear_runtime_refresh_request_file()
     except RuntimeSnapshotUnavailableError:
         pass
+
+
+def _clear_recovery_file_best_effort() -> None:
+    get_runtime_recovery_path().unlink(missing_ok=True)
 
 
 def _stream_chunk_text(chunk: bytes | str) -> str:

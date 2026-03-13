@@ -727,27 +727,39 @@ def test_run_orchestrator_surfaces_precise_plane_config_errors(
     assert events[0][1]["error_code"] == error_code
 
 
-def test_run_orchestrator_rejects_valid_plane_config_until_supported(
+def test_run_orchestrator_accepts_valid_plane_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     events = install_log_event_recorder(monkeypatch)
-    write_workflow(
+    workflow_path = write_workflow(
         tmp_path / "WORKFLOW.md",
         contents=VALID_PLANE_WORKFLOW,
     )
+    stdout = StringIO()
+    calls: list[str] = []
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "run_once",
+        fake_async_method(calls, "run_once"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "wait_for_running_workers",
+        fake_async_method(calls, "wait_for_running_workers"),
+    )
+    monkeypatch.setattr(
+        CommandOrchestrator,
+        "aclose",
+        fake_async_method(calls, "aclose"),
+    )
 
-    with pytest.raises(CommandError, match=r"Startup failed \(unsupported_tracker_kind\):"):
-        call_command("run_orchestrator")
+    call_command("run_orchestrator", "--once", stdout=stdout)
 
-    assert events == [
-        (
-            "startup_validation_failed",
-            {
-                "error_code": "unsupported_tracker_kind",
-                "message": "tracker.kind must be set to the supported tracker kind 'linear'.",
-            },
-        )
-    ]
+    output = stdout.getvalue()
+    assert f"Loaded workflow definition from {workflow_path}" in output
+    assert "Orchestrator tick completed." in output
+    assert calls == ["run_once", "wait_for_running_workers", "aclose"]
+    assert events == []
