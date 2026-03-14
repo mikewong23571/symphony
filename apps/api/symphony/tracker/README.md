@@ -24,7 +24,10 @@ points, and the Symphony-owned tracker mutation contract.
   current mutation backend implementation used by the factory.
 - `plane.py`: Plane payload normalization into the shared `Issue` model.
 - `plane_client.py`: Plane REST transport and issue-page helpers built around `api_base_url`,
-  `workspace_slug`, `project_id`, and `X-API-Key`.
+  `workspace_slug`, `project_id`, and `X-API-Key`. Plane-backed pull-request links deliberately
+  round-trip only the repository-owned `id`, `title`, and `url` fields; `subtitle` and custom
+  metadata are normalized away because Plane's `/links/` write surface does not accept them as
+  stable caller-owned fields.
 
 ## Design notes
 
@@ -40,3 +43,7 @@ points, and the Symphony-owned tracker mutation contract.
 - Pull-request link safety depends on the backend link/attachment contract being URL-idempotent for
   a given issue, so repeated requests with the same issue/url pair update the tracked artifact
   instead of forcing API callers to invent duplicate detection.
+- Plane pull-request links are backed by the Plane `/links/` REST endpoint. Plane lets Symphony
+  create only `title` + `url` there, so the normalized Plane link contract deliberately returns
+  `subtitle=None` and `metadata={}` rather than pretending custom subtitle/metadata round-trip
+  safely.

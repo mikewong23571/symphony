@@ -399,6 +399,267 @@ def test_tracker_pull_request_endpoint_rejects_non_finite_metadata_values(
     assert backend.issue_link_calls == 0
 
 
+def test_tracker_pull_request_endpoint_uses_plane_workflow_backend_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = write_plane_workflow(tmp_path / "runtime" / "WORKFLOW.md")
+    transport = RecordingPlaneTransport(
+        [
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(status_code=200, body=json.dumps([])),
+            PlaneTransportResponse(
+                status_code=201,
+                body=json.dumps(
+                    {
+                        "id": "link-123",
+                        "title": "PR #1",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    [
+                        {
+                            "id": "link-123",
+                            "title": "PR #1",
+                            "url": "https://github.com/acme/symphony/pull/1",
+                            "metadata": {"provider": "github"},
+                        }
+                    ]
+                ),
+            ),
+        ]
+    )
+
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    _build_tracker_mutation_service.cache_clear()
+
+    payload = {
+        "title": "PR #1",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": "Open",
+        "metadata": {"status": "open", "commit_count": 3},
+    }
+
+    try:
+        first_response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/pull-request",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+        second_response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/pull-request",
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+    finally:
+        _build_tracker_mutation_service.cache_clear()
+
+    expected_json = {
+        "operation": "pull_request_attachment",
+        "status": "applied",
+        "issue": {"id": "issue-123", "identifier": "ENG-123"},
+        "pull_request": {
+            "attachment_id": "link-123",
+            "title": "PR #1",
+            "url": "https://github.com/acme/symphony/pull/1",
+            "subtitle": None,
+            "metadata": {},
+        },
+    }
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    # Both responses must be identical: the idempotent path returns the cached link, not a new one.
+    assert first_response.json() == expected_json
+    assert second_response.json() == expected_json
+    assert [call["method"] for call in transport.calls] == ["GET", "GET", "POST", "GET", "GET"]
+    assert transport.calls[1]["url"].endswith("/projects/project-123/work-items/issue-123/links/")
+    assert transport.calls[2]["json_body"] == {
+        "title": "PR #1",
+        "url": "https://github.com/acme/symphony/pull/1",
+    }
+
+
+def test_tracker_pull_request_endpoint_updates_plane_link_title_on_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow_path = write_plane_workflow(tmp_path / "runtime" / "WORKFLOW.md")
+    transport = RecordingPlaneTransport(
+        [
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(status_code=200, body=json.dumps([])),
+            PlaneTransportResponse(
+                status_code=201,
+                body=json.dumps(
+                    {
+                        "id": "link-123",
+                        "title": "Old PR title",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "count": 1,
+                        "next_cursor": None,
+                        "results": [
+                            make_plane_issue_payload(
+                                issue_id="issue-123",
+                                sequence_id=123,
+                                state_id="state-todo",
+                                state_name="Todo",
+                            )
+                        ],
+                    }
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    [
+                        {
+                            "id": "link-123",
+                            "title": "Old PR title",
+                            "url": "https://github.com/acme/symphony/pull/1",
+                            "metadata": {"provider": "github"},
+                        }
+                    ]
+                ),
+            ),
+            PlaneTransportResponse(
+                status_code=200,
+                body=json.dumps(
+                    {
+                        "id": "link-123",
+                        "title": "PR #1",
+                        "url": "https://github.com/acme/symphony/pull/1",
+                        "metadata": {"provider": "github"},
+                    }
+                ),
+            ),
+        ]
+    )
+
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
+    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    _build_tracker_mutation_service.cache_clear()
+
+    first_payload = {
+        "title": "Old PR title",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": "Open",
+        "metadata": {"status": "open", "commit_count": 3},
+    }
+    second_payload = {
+        "title": "PR #1",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": "Merged",
+        "metadata": {"status": "merged", "commit_count": 3},
+    }
+
+    try:
+        first_response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/pull-request",
+            data=json.dumps(first_payload),
+            content_type="application/json",
+        )
+        second_response = Client().post(
+            "/api/v1/tracker/issues/ENG-123/pull-request",
+            data=json.dumps(second_payload),
+            content_type="application/json",
+        )
+    finally:
+        _build_tracker_mutation_service.cache_clear()
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json()["pull_request"] == {
+        "attachment_id": "link-123",
+        "title": "Old PR title",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": None,
+        "metadata": {},
+    }
+    assert second_response.json()["pull_request"] == {
+        "attachment_id": "link-123",
+        "title": "PR #1",
+        "url": "https://github.com/acme/symphony/pull/1",
+        "subtitle": None,
+        "metadata": {},
+    }
+    assert [call["method"] for call in transport.calls] == [
+        "GET",
+        "GET",
+        "POST",
+        "GET",
+        "GET",
+        "PATCH",
+    ]
+    assert transport.calls[-1]["url"].endswith(
+        "/projects/project-123/work-items/issue-123/links/link-123/"
+    )
+    assert transport.calls[-1]["json_body"] == {"title": "PR #1"}
+
+
 def test_tracker_comment_endpoint_uses_plane_workflow_backend(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

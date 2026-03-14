@@ -1259,6 +1259,9 @@ Symphony does not require first-class tracker write APIs in the orchestrator.
 - The service remains a scheduler/runner and tracker reader.
 - Workflow-specific success often means "reached the next handoff state" (for example
   `Human Review`) rather than tracker terminal state `Done`.
+- When the backend-owned `/pull-request` API is backed by Plane issue links, the normalized
+  response envelope stays the same but Plane can only persist the link `title` and `url`; Symphony
+  therefore normalizes `subtitle` to `null` and custom `metadata` to `{}` for Plane-backed links.
 - If the optional `linear_graphql` client-side tool extension is implemented for Linear workflows,
   it is still part of the agent toolchain rather than orchestrator business logic.
 
