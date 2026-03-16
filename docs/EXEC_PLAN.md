@@ -19,6 +19,9 @@ The most important outcome is architectural, not cosmetic. The repository must s
 - [x] 2026-03-11 05:14Z: Validated Milestone 1 in a sanitized shell environment that unsets inherited `LINEAR_API_KEY`, `SYMPHONY_RUNTIME_*`, `SYMPHONY_WORKFLOW_PATH`, and `VIRTUAL_ENV` exports. Evidence: pre-change baseline `114 passed in 4.12s`; post-change milestone suite `107 passed in 4.15s`; focused factory tests `2 passed in 0.04s`; combined regression check `109 passed in 4.12s`; `uv run ruff check ...` and `uv run mypy apps/api` both passed.
 - [x] 2026-03-12 01:04Z: Landed the `MIK-37` Plane read-foundation slice. Added `apps/api/symphony/tracker/plane.py` to normalize representative Plane issue payloads into the shared `Issue` model, added `apps/api/symphony/tracker/plane_client.py` with deterministic authenticated REST helpers for self-hosted Plane issue-list reads, and replaced the Plane tracker test placeholder with focused unit coverage.
 - [x] 2026-03-12 01:04Z: Validated the `MIK-37` slice with `uv run ruff check apps/api/symphony/tracker/plane.py apps/api/symphony/tracker/plane_client.py apps/api/symphony/tracker/__init__.py apps/api/tests/unit/tracker/test_plane.py apps/api/tests/unit/tracker/test_plane_client.py`, `uv run mypy apps/api`, and `uv run pytest apps/api/tests/unit/tracker/test_plane.py apps/api/tests/unit/tracker/test_plane_client.py -q`. Evidence: `ruff check` passed, `mypy` reported `Success: no issues found in 83 source files`, and the focused Plane suite reported `21 passed in 0.50s`.
+- [x] 2026-03-14 07:03Z: Landed the Milestone 5 cleanup slice. Updated `apps/api/symphony/agent_runner/prompting.py` so the fallback prompt is tracker-neutral, tightened `apps/api/tests/unit/agent_runner/test_prompting.py` to assert the exact fallback string, added a concrete self-hosted Plane smoke recipe to `docs/development.md`, and corrected the manual smoke steps in this ExecPlan so they start both Django and the orchestrator against the same repository-local `WORKFLOW.md`.
+- [x] 2026-03-14 07:03Z: Ran the final repo-wide validation in a sanitized shell after installing missing frontend dependencies with `pnpm install`. Evidence: `make format` passed, `make lint` passed, `make typecheck` passed with `Success: no issues found in 83 source files`, and `make test` passed with backend `361 passed in 17.29s` plus web `28 passed (2 files)`.
+- [x] 2026-03-16 09:29Z: Completed the final live Plane smoke against a local official self-hosted Plane `v1.2.3` stack rooted under `.tmp/plane-selfhost/`. Evidence: a repository-local `WORKFLOW.md` targeted `http://localhost`, workspace `engineering`, project `170db6e0-e861-4e5b-9d0a-36d6788038a6`, and issue `ENG-1`; `curl http://127.0.0.1:8001/api/v1/state` returned a runtime snapshot with `ENG-1`, `curl http://127.0.0.1:8001/api/v1/ENG-1` returned the issue detail envelope, `curl -X POST http://127.0.0.1:8001/api/v1/tracker/issues/ENG-1/comments ...` returned `{\"operation\":\"comment\",\"status\":\"applied\"...}`, and a direct Plane API read of `/work-items/6becc353-b82f-4a6c-bb42-3f65200573e0/comments/` confirmed the tracker comment `Ready for review`. The only local deviation from the documented recipe was using port `8001` for Django because another checkout already owned `8000` on this machine.
 - [ ] Extend workflow configuration and validation so `tracker.kind: plane` is a first-class typed configuration with self-host-friendly fields.
 - [ ] Add a Plane adapter for issue reads, issue normalization, issue comments, issue state transitions, and pull request link attachment.
 - [ ] Update tests, docs, and operator-facing examples so the repository describes a pluggable tracker system instead of a Linear-only system.
@@ -42,6 +45,15 @@ The most important outcome is architectural, not cosmetic. The repository must s
 
 - Observation: Plane’s public API docs now emphasize `/work-items/` endpoints and mark `/issues/` endpoints deprecated with a sunset date of 2026-03-31, while the current ticket sequence still targets `/issues/`-shaped issue reads.
   Evidence: the official Plane API reference consulted on 2026-03-12 documents `work-items` as the primary surface and labels the older `issues` endpoints deprecated. The `MIK-37` slice therefore kept the issue-list path isolated to one tracker-local template so a future migration does not leak endpoint assumptions into orchestrator code.
+
+- Observation: the earlier manual smoke wording that said `make dev-api` was incomplete for runtime reads.
+  Evidence: `apps/api/symphony/api/views.py` serves `/api/v1/state` by reading the runtime snapshot, `scripts/dev/api-server.sh` only starts Django `runserver`, and the snapshot is produced by `manage.py run_orchestrator`, so a real smoke needs both processes running against the same `WORKFLOW.md`.
+
+- Observation: the full backend suite had a pre-existing logger-capture bug unrelated to Plane support.
+  Evidence: `make test` initially failed with eight assertions in `apps/api/tests/unit/agent_runner/test_harness.py` because `config/settings/local.py` configures the `symphony` logger tree with `propagate: False`, leaving `caplog.text` empty even though the harness logs were emitted to stderr. Attaching `caplog.handler` directly to `symphony.agent_runner.harness` fixed the suite without changing runtime logging behavior.
+
+- Observation: Plane’s `issues/` pagination can echo a `next_cursor` even when the page is already terminal.
+  Evidence: the local self-host smoke project returned `count: 1`, `next_page_results: false`, and `next_cursor: "50:1:0"` for the first expanded issue-list page. The Plane client previously treated `next_cursor` alone as authoritative and paginated until the Plane PAT hit `HTTP 429`; the fix now stops pagination when `next_page_results` is explicitly `false`.
 
 ## Decision Log
 
@@ -69,9 +81,15 @@ The most important outcome is architectural, not cosmetic. The repository must s
   Rationale: this ticket only needs payload normalization plus deterministic HTTP primitives. Deferring factory wiring keeps the scope bounded, avoids semantic changes in orchestrator code, and leaves a single migration point if the repository switches from `/issues/` to `/work-items/`.
   Date/Author: 2026-03-12 / Codex
 
+- Decision: Document the Plane smoke as a dual-process local flow and keep the non-propagating runtime logger configuration unchanged.
+  Rationale: the operator guidance needs to match how the repository actually serves runtime state today, which requires both Django and the orchestrator. The unrelated harness test failure was best fixed at the test boundary by attaching `caplog` to the non-propagating logger rather than by changing local logging semantics for the whole app.
+  Date/Author: 2026-03-14 / Codex
+
 ## Outcomes & Retrospective
 
 Milestone 1 is now complete on this branch. The repository has a concrete tracker extension seam: `apps/api/symphony/tracker/interfaces.py` defines the shared read and mutation protocols, `apps/api/symphony/tracker/factory.py` is the single runtime selector for tracker adapters, and the orchestrator plus write service no longer construct `LinearTrackerClient` directly outside the tracker package. The main lesson from this milestone is that the adapter boundary was genuinely low-risk: the Linear implementation stayed intact while the call sites became tracker-neutral. The remaining work is now concentrated in configuration typing, Plane transport, and write-contract neutralization rather than in runtime wiring.
+
+Milestone 5 cleanup is now landed in this workspace. The repository no longer tells the agent that every issue comes from Linear, the development guide includes the concrete self-hosted Plane smoke loop an operator needs, and the final repo-wide quality gates pass in a sanitized shell after repairing an unrelated harness logger test bug. The final live proof also ran end to end against a local official self-hosted Plane stack: the runtime snapshot served `ENG-1`, the issue detail endpoint returned the same Plane-backed issue, and the backend comment endpoint wrote `Ready for review` through to Plane. That smoke uncovered one final correctness gap in the Plane client pagination loop, now fixed by honoring Plane’s `next_page_results: false` terminal-page signal instead of blindly following an echoed `next_cursor`.
 
 ## Context and Orientation
 
@@ -197,14 +215,18 @@ For a manual smoke with a real self-hosted Plane instance after Milestone 4, pre
     # Prompt body
     Continue working on {{ issue.identifier }}.
 
-Then export credentials and run the backend:
+Then export credentials and start both the Django API and the orchestrator
+against that same repository-local workflow:
 
     export PLANE_API_KEY=plane_api_example
     make dev-api
+    uv run python apps/api/manage.py run_orchestrator --port 9000
 
-In another terminal, verify the read-only snapshot and one write path:
+In another terminal, verify the read-only snapshot and one write path. Replace
+`ENG-123` with an identifier returned by `/api/v1/state`:
 
     curl http://127.0.0.1:8000/api/v1/state
+    curl http://127.0.0.1:8000/api/v1/ENG-123
     curl -X POST http://127.0.0.1:8000/api/v1/tracker/issues/ENG-123/comments -H 'Content-Type: application/json' -d '{"body":"Ready for review"}'
 
 Expect the runtime state response to include Plane-backed issue identifiers and the comment endpoint to return HTTP `200` with the normalized Symphony response envelope.
@@ -345,3 +367,7 @@ This client must be the single owner of Plane URL construction, authentication h
 Plan revision note: 2026-03-11 / Codex. Replaced the completed roadmap closeout plan with a new active ExecPlan focused on introducing a tracker adapter framework and a Plane self-host integration path, because the repository’s next major change is no longer roadmap closeout work but a tracker abstraction and second adapter implementation.
 
 Plan revision note: 2026-03-11 05:15Z / Codex. Updated the living plan after Milestone 1 landed so `Progress`, `Surprises & Discoveries`, `Outcomes & Retrospective`, and the current repository orientation match the branch state. Added the adapter-factory completion evidence and documented that inherited `LINEAR_API_KEY` plus `SYMPHONY_RUNTIME_*` exports from another workspace must be unset for the focused tracker baseline to be deterministic.
+
+Plan revision note: 2026-03-14 07:03Z / Codex. Updated the living plan for the Milestone 5 cleanup slice. Recorded the tracker-neutral fallback prompt change, the corrected dual-process Plane smoke recipe, the final repo-wide validation evidence, the unrelated harness logger test fix that was required to make `make test` green, and the remaining blocker that this workspace does not have live self-hosted Plane credentials for the final manual smoke.
+
+Plan revision note: 2026-03-16 09:29Z / Codex. Updated the living plan after the final local self-hosted Plane smoke succeeded. Recorded the live read/write evidence, the temporary local `8001` API-port deviation, and the Plane pagination fix that was required after the self-host returned `next_page_results: false` alongside an echoed `next_cursor`.

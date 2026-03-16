@@ -345,6 +345,36 @@ def test_fetch_candidate_issues_uses_cursor_pagination_and_filters_active_states
     }
 
 
+def test_fetch_candidate_issues_stops_when_plane_marks_final_page_despite_cursor_echo() -> None:
+    transport = RecordingTransport(
+        response=PlaneTransportResponse(
+            status_code=200,
+            body=json.dumps(
+                {
+                    "count": 1,
+                    "next_cursor": "50:1:0",
+                    "next_page_results": False,
+                    "results": [
+                        make_issue_payload(
+                            issue_id="issue-1",
+                            sequence_id=1,
+                            name="Only candidate",
+                            state_id="state-todo",
+                            state_name="Todo",
+                        )
+                    ],
+                }
+            ),
+        )
+    )
+    client = PlaneTrackerClient(make_tracker_config(), transport=transport)
+
+    issues = client.fetch_candidate_issues()
+
+    assert [issue.identifier for issue in issues] == ["ENG-1"]
+    assert len(transport.calls) == 1
+
+
 def test_fetch_issues_by_states_short_circuits_empty_requests() -> None:
     transport = RecordingTransport()
     client = PlaneTrackerClient(make_tracker_config(), transport=transport)

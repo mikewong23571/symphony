@@ -521,7 +521,8 @@ def _extract_issue_page(payload: Mapping[str, Any]) -> PlaneIssuePage:
     if count is not None and (isinstance(count, bool) or not isinstance(count, int) or count < 0):
         raise PlanePayloadError("Plane issue response contains a malformed count.")
 
-    next_cursor = _extract_next_cursor(payload)
+    next_page_results = _extract_next_page_results(payload)
+    next_cursor = _extract_next_cursor(payload) if next_page_results is not False else None
     return PlaneIssuePage(
         items=tuple(normalized_results),
         next_cursor=next_cursor,
@@ -610,6 +611,15 @@ def _extract_next_cursor(payload: Mapping[str, Any]) -> str | None:
         raise PlanePayloadError("Plane issue response contains a malformed next_cursor.")
     normalized = value.strip()
     return normalized or None
+
+
+def _extract_next_page_results(payload: Mapping[str, Any]) -> bool | None:
+    value = payload.get("next_page_results")
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise PlanePayloadError("Plane issue response contains a malformed next_page_results.")
+    return value
 
 
 def _extract_next_offset(value: Any) -> int | None:
