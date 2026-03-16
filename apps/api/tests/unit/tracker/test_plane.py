@@ -16,7 +16,7 @@ def test_normalize_plane_issue_normalizes_full_issue_payload() -> None:
             "priority": "high",
             "state": {"name": "Todo"},
             "branch_name": "feature/eng-123",
-            "url": "https://plane.example/engineering/issues/123",
+            "url": "https://plane.example/engineering/work-items/ENG-123",
             "project": {"identifier": "ENG"},
             "labels": [
                 {"name": "Backend"},
@@ -42,7 +42,7 @@ def test_normalize_plane_issue_normalizes_full_issue_payload() -> None:
     assert issue.priority == 2
     assert issue.state == "Todo"
     assert issue.branch_name == "feature/eng-123"
-    assert issue.url == "https://plane.example/engineering/issues/123"
+    assert issue.url == "https://plane.example/engineering/work-items/ENG-123"
     assert issue.labels == ("backend", "needs review")
     assert issue.blocked_by == (
         IssueBlocker(
@@ -91,6 +91,40 @@ def test_normalize_plane_issue_accepts_missing_optional_fields() -> None:
     assert issue.blocked_by == ()
     assert issue.created_at is None
     assert issue.updated_at is None
+
+
+def test_normalize_plane_issue_falls_back_to_supported_work_item_html_description() -> None:
+    issue = normalize_plane_issue(
+        {
+            "id": "issue-9",
+            "sequence_id": 9,
+            "name": "Work item payload",
+            "description_html": "<div>First line</div><p>Second &amp; third</p>",
+            "state": {"name": "Todo"},
+            "project": {"identifier": "ENG"},
+            "blockedBy": {
+                "nodes": [
+                    {
+                        "relatedIssue": {
+                            "id": "issue-7",
+                            "sequenceId": "7",
+                            "projectDetail": {"identifier": "ENG"},
+                            "stateDetail": {"name": "Blocked"},
+                        }
+                    }
+                ]
+            },
+        }
+    )
+
+    assert issue.description == "First line\nSecond & third"
+    assert issue.blocked_by == (
+        IssueBlocker(
+            id="issue-7",
+            identifier="ENG-7",
+            state="Blocked",
+        ),
+    )
 
 
 def test_normalize_plane_issue_maps_named_priorities_and_blank_values() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Any
 
 from .models import Issue, IssueBlocker
@@ -78,12 +79,19 @@ def _extract_title(payload: Mapping[str, Any]) -> str:
 
 
 def _extract_description(payload: Mapping[str, Any]) -> str | None:
-    return _optional_string(
+    text_description = _optional_string(
         payload.get("description_stripped")
         or payload.get("descriptionStripped")
         or payload.get("description_text")
         or payload.get("description")
     )
+    if text_description is not None:
+        return text_description
+
+    html_description = _optional_string(payload.get("description_html"))
+    if html_description is None:
+        return None
+    return _strip_html_description(html_description)
 
 
 def _extract_branch_name(payload: Mapping[str, Any]) -> str | None:
@@ -230,3 +238,34 @@ def _iter_nodes(value: Any) -> Iterable[Any]:
     if isinstance(value, list):
         return value
     return ()
+
+
+def _strip_html_description(value: str) -> str | None:
+    parser = _HTMLTextExtractor()
+    parser.feed(value)
+    parser.close()
+
+    raw_text = parser.get_text()
+    normalized_lines = [line.strip() for line in raw_text.splitlines()]
+    text = "\n".join(line for line in normalized_lines if line)
+    return text or None
+
+
+class _HTMLTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"br", "hr"}:
+            self._parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"div", "li", "p", "section", "tr"}:
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._parts)

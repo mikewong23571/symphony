@@ -12,7 +12,7 @@ from symphony.tracker import (
     PlanePayloadError,
     PlaneTrackerClient,
     PlaneTransportResponse,
-    build_plane_issue_collection_url,
+    build_plane_work_item_collection_url,
 )
 from symphony.tracker.plane_client import DEFAULT_PLANE_PAGE_SIZE
 from symphony.workflow.config import PlaneTrackerConfig
@@ -114,7 +114,7 @@ def make_state_payload(
     }
 
 
-def test_build_plane_issue_collection_url_preserves_base_subpath_and_quotes_segments() -> None:
+def test_build_plane_work_item_collection_url_preserves_base_subpath_and_quotes_segments() -> None:
     config = PlaneTrackerConfig(
         kind="plane",
         api_base_url="https://plane.example/root",
@@ -125,11 +125,11 @@ def test_build_plane_issue_collection_url_preserves_base_subpath_and_quotes_segm
         terminal_states=("Done",),
     )
 
-    url = build_plane_issue_collection_url(config)
+    url = build_plane_work_item_collection_url(config)
 
     assert (
         url
-        == "https://plane.example/root/api/v1/workspaces/engineering%20team/projects/project%2F123/issues/"
+        == "https://plane.example/root/api/v1/workspaces/engineering%20team/projects/project%2F123/work-items/"
     )
 
 
@@ -142,7 +142,7 @@ def test_fetch_issue_page_sends_auth_headers_and_parses_next_offset() -> None:
                     "count": 1,
                     "next": (
                         "https://plane.example/self-hosted/api/v1/workspaces/engineering/"
-                        "projects/project-123/issues/?limit=50&offset=50"
+                        "projects/project-123/work-items/?limit=50&offset=50"
                     ),
                     "results": [
                         {
@@ -170,7 +170,7 @@ def test_fetch_issue_page_sends_auth_headers_and_parses_next_offset() -> None:
     assert len(transport.calls) == 1
     assert (
         transport.calls[0]["url"]
-        == "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/project-123/issues/"
+        == "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/project-123/work-items/"
     )
     assert transport.calls[0]["method"] == "GET"
     assert transport.calls[0]["headers"] == {
@@ -234,7 +234,7 @@ def test_fetch_issue_page_maps_non_2xx_status_to_typed_error() -> None:
         json.dumps({"count": 1}),
         json.dumps({"results": ["bad-node"]}),
         json.dumps({"results": [], "count": "1"}),
-        json.dumps({"results": [], "next": "https://plane.example/issues/?limit=50"}),
+        json.dumps({"results": [], "next": "https://plane.example/work-items/?limit=50"}),
     ],
 )
 def test_fetch_issue_page_maps_malformed_payloads_to_typed_error(body: str) -> None:
@@ -479,15 +479,15 @@ def test_fetch_issue_states_by_ids_fetches_issue_detail_and_skips_missing_ids() 
     assert [call["url"] for call in transport.calls] == [
         (
             "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
-            "project-123/issues/issue-1/"
+            "project-123/work-items/issue-1/"
         ),
         (
             "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
-            "project-123/issues/missing-issue/"
+            "project-123/work-items/missing-issue/"
         ),
         (
             "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
-            "project-123/issues/issue-3/"
+            "project-123/work-items/issue-3/"
         ),
     ]
     assert all(
@@ -991,7 +991,7 @@ def test_update_issue_state_patches_work_item_and_refetches_issue() -> None:
             "method": "GET",
             "url": (
                 "https://plane.example/self-hosted/api/v1/workspaces/engineering/projects/"
-                "project-123/issues/issue-123/"
+                "project-123/work-items/issue-123/"
             ),
             "headers": {
                 "Accept": "application/json",

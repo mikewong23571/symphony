@@ -196,7 +196,7 @@ export PLANE_PROJECT_ID=88c2d97c-a6ad-4012-b526-5577c0d7c769
 
 `api_base_url` points at the root of your self-hosted Plane deployment.
 `workspace_slug` and `project_id` map directly to
-`/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`.
+`/api/v1/workspaces/{workspace_slug}/projects/{project_id}/work-items/`.
 
 The environment variable names above (`PLANE_API_BASE_URL`, `PLANE_API_KEY`, `PLANE_WORKSPACE`,
 `PLANE_PROJECT_ID`) are conventional — the runtime only sees the resolved string value, so any
