@@ -1,5 +1,6 @@
 UV ?= uv
 PNPM ?= pnpm
+DJANGO_TEST_SETTINGS ?= config.settings.test
 
 .PHONY: sync install-web dev dev-api dev-web lint lint-api lint-web typecheck typecheck-api typecheck-web format format-api format-web test test-api test-web precommit-install precommit-run
 
@@ -21,7 +22,7 @@ dev-web:
 lint: lint-api lint-web
 
 test-api:
-	$(UV) run pytest
+	DJANGO_SETTINGS_MODULE=$(DJANGO_TEST_SETTINGS) $(UV) run pytest
 
 test: test-api test-web
 

@@ -261,6 +261,12 @@ The same commands run locally and in CI:
 | Frontend | `make lint-web` | `make typecheck-web` | `make test-web` |
 | All | `make lint` | `make typecheck` | `make test` |
 
+`make test-api` and the backend portion of `make test` force
+`DJANGO_SETTINGS_MODULE=config.settings.test`, so inherited dev-shell exports
+such as `config.settings.local` do not leak into pytest. If you need to run
+`uv run pytest` directly, export `DJANGO_SETTINGS_MODULE=config.settings.test`
+for that shell or inline for the command.
+
 Run all pre-commit checks at once:
 
 ```sh
