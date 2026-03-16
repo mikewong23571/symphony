@@ -30,6 +30,7 @@ from .plane_client import (
     PlaneTrackerClient,
     PlaneTransportResponse,
     build_plane_issue_collection_url,
+    build_plane_work_item_collection_url,
 )
 from .write_contract import (
     TrackerAttachment,
@@ -109,6 +110,7 @@ __all__ = [
     "TrackerWorkflowState",
     "UPDATE_ISSUE_STATE_MUTATION",
     "build_plane_issue_collection_url",
+    "build_plane_work_item_collection_url",
     "build_tracker_mutation_backend",
     "build_tracker_read_client",
     "build_tracker_mutation_service",

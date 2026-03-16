@@ -23,8 +23,6 @@ from .write_contract import (
 
 DEFAULT_PLANE_TIMEOUT_MS = 30_000
 DEFAULT_PLANE_PAGE_SIZE = 50
-PLANE_ISSUES_PATH_TEMPLATE = "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/"
-PLANE_ISSUE_PATH_TEMPLATE = f"{PLANE_ISSUES_PATH_TEMPLATE}{{issue_id}}/"
 PLANE_WORK_ITEMS_PATH_TEMPLATE = (
     "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/work-items/"
 )
@@ -35,7 +33,7 @@ PLANE_WORK_ITEM_LINK_PATH_TEMPLATE = f"{PLANE_WORK_ITEM_LINKS_PATH_TEMPLATE}{{li
 PLANE_PROJECT_STATES_PATH_TEMPLATE = (
     "/api/v1/workspaces/{workspace_slug}/projects/{project_id}/states/"
 )
-PLANE_ISSUE_EXPAND = "state,project,labels,blocked_by_issues"
+PLANE_WORK_ITEM_EXPAND = "state,project,labels,blocked_by_issues"
 
 
 class PlaneAPIError(Exception):
@@ -127,7 +125,7 @@ class PlaneTrackerClient:
         for issue_id in requested_issue_ids:
             issue_payload = self._fetch_optional_issue_json(
                 issue_id=issue_id,
-                query_params={"expand": PLANE_ISSUE_EXPAND},
+                query_params={"expand": PLANE_WORK_ITEM_EXPAND},
             )
             if issue_payload is None:
                 continue
@@ -235,7 +233,7 @@ class PlaneTrackerClient:
         query_params: Mapping[str, object] | None = None,
     ) -> PlaneIssuePage:
         payload = self._fetch_json(
-            path=PLANE_ISSUES_PATH_TEMPLATE.format(
+            path=PLANE_WORK_ITEMS_PATH_TEMPLATE.format(
                 workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
                 project_id=quote(self.tracker_config.project_id or "", safe=""),
             ),
@@ -248,7 +246,7 @@ class PlaneTrackerClient:
         return _extract_issue_page(payload)
 
     def build_issue_collection_url(self) -> str:
-        return build_plane_issue_collection_url(self.tracker_config)
+        return build_plane_work_item_collection_url(self.tracker_config)
 
     def _fetch_json(
         self,
@@ -298,10 +296,10 @@ class PlaneTrackerClient:
         response = self._send_request(
             transport=transport,
             method="GET",
-            path=PLANE_ISSUE_PATH_TEMPLATE.format(
+            path=PLANE_WORK_ITEM_PATH_TEMPLATE.format(
                 workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
                 project_id=quote(self.tracker_config.project_id or "", safe=""),
-                issue_id=quote(issue_id, safe=""),
+                work_item_id=quote(issue_id, safe=""),
             ),
             query_params=query_params,
             json_body=None,
@@ -316,12 +314,12 @@ class PlaneTrackerClient:
 
     def _fetch_issue_reference_by_id(self, issue_id: str) -> TrackerIssueReference:
         payload = self._fetch_json(
-            path=PLANE_ISSUE_PATH_TEMPLATE.format(
+            path=PLANE_WORK_ITEM_PATH_TEMPLATE.format(
                 workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
                 project_id=quote(self.tracker_config.project_id or "", safe=""),
-                issue_id=quote(issue_id, safe=""),
+                work_item_id=quote(issue_id, safe=""),
             ),
-            query_params={"expand": PLANE_ISSUE_EXPAND},
+            query_params={"expand": PLANE_WORK_ITEM_EXPAND},
         )
         return _normalize_issue_reference(
             payload,
@@ -368,13 +366,13 @@ class PlaneTrackerClient:
     def _fetch_cursor_issue_page(self, *, cursor: str | None) -> PlaneIssuePage:
         query_params: dict[str, object] = {
             "per_page": DEFAULT_PLANE_PAGE_SIZE,
-            "expand": PLANE_ISSUE_EXPAND,
+            "expand": PLANE_WORK_ITEM_EXPAND,
         }
         if cursor is not None:
             query_params["cursor"] = cursor
 
         payload = self._fetch_json(
-            path=PLANE_ISSUES_PATH_TEMPLATE.format(
+            path=PLANE_WORK_ITEMS_PATH_TEMPLATE.format(
                 workspace_slug=quote(self.tracker_config.workspace_slug or "", safe=""),
                 project_id=quote(self.tracker_config.project_id or "", safe=""),
             ),
@@ -411,14 +409,18 @@ class PlaneTrackerClient:
         return None
 
 
-def build_plane_issue_collection_url(tracker_config: PlaneTrackerConfig) -> str:
+def build_plane_work_item_collection_url(tracker_config: PlaneTrackerConfig) -> str:
     return _join_base_url(
         tracker_config.api_base_url or "",
-        PLANE_ISSUES_PATH_TEMPLATE.format(
+        PLANE_WORK_ITEMS_PATH_TEMPLATE.format(
             workspace_slug=quote(tracker_config.workspace_slug or "", safe=""),
             project_id=quote(tracker_config.project_id or "", safe=""),
         ),
     )
+
+
+def build_plane_issue_collection_url(tracker_config: PlaneTrackerConfig) -> str:
+    return build_plane_work_item_collection_url(tracker_config)
 
 
 def _default_plane_transport(

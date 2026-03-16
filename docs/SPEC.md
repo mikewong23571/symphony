@@ -1200,8 +1200,8 @@ Plane-specific requirements for `tracker.kind == "plane"`:
 - `tracker.kind == "plane"`
 - Base URL comes from `tracker.api_base_url`
 - Auth token is sent in the `X-API-Key` header
-- Issue collection path:
-  `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/issues/`
+- Work-item collection path:
+  `/api/v1/workspaces/{workspace_slug}/projects/{project_id}/work-items/`
 - `tracker.workspace_slug` and `tracker.project_id` map directly to those path segments
 - Pagination follows the `next_cursor` field in each response; iteration stops when `next_cursor`
   is absent or empty
@@ -1221,6 +1221,11 @@ Additional normalization details:
 - `blocked_by` -> derived from inverse relations where relation type is `blocks`
 - `priority` -> integer only (non-integers become null)
 - `created_at` and `updated_at` -> parse ISO-8601 timestamps
+- Plane work-item reads should expand `state`, `project`, and `labels` because the raw
+  `/work-items/` payload can represent `state` and `project` as scalar ids rather than nested
+  objects.
+- When a Plane work-item payload omits plain-text description fields and only provides
+  `description_html`, strip the HTML to plain text before assigning `Issue.description`.
 
 ### 11.4 Error Handling Contract
 
