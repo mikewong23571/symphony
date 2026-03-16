@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -93,6 +93,19 @@ def build_config(
             prompt_template="Issue {{ issue.identifier }} attempt={{ attempt }}",
         )
     )
+
+
+@pytest.fixture
+def harness_log_capture(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
+    # Django local settings keep the symphony logger tree non-propagating, so
+    # these tests must attach the capture handler directly.
+    logger = logging.getLogger("symphony.agent_runner.harness")
+    caplog.set_level(logging.INFO, logger=logger.name)
+    logger.addHandler(caplog.handler)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
 
 
 def test_run_issue_attempt_reuses_thread_for_continuation_turns(tmp_path: Path) -> None:
@@ -249,7 +262,7 @@ def test_run_issue_attempt_uses_latest_hook_config_for_after_run(tmp_path: Path)
 
 
 def test_run_issue_attempt_surfaces_before_run_hook_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
     marker_path = tmp_path / "after_run"
@@ -262,8 +275,6 @@ def test_run_issue_attempt_surfaces_before_run_hook_failures(
             "after_run": f"touch {marker_path}",
         },
     )
-
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -279,14 +290,14 @@ def test_run_issue_attempt_surfaces_before_run_hook_failures(
     asyncio.run(run_test())
 
     assert not marker_path.exists()
-    assert "event=hook_started hook=before_run" in caplog.text
-    assert "event=hook_failed hook=before_run" in caplog.text
-    assert "issue_id=issue-1" in caplog.text
-    assert "issue_identifier=SYM-123" in caplog.text
+    assert "event=hook_started hook=before_run" in harness_log_capture.text
+    assert "event=hook_failed hook=before_run" in harness_log_capture.text
+    assert "issue_id=issue-1" in harness_log_capture.text
+    assert "issue_identifier=SYM-123" in harness_log_capture.text
 
 
 def test_run_issue_attempt_logs_after_run_best_effort_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
     config = build_config(
@@ -295,7 +306,6 @@ def test_run_issue_attempt_logs_after_run_best_effort_failures(
         log_path=tmp_path / "messages.jsonl",
         hook_overrides={"after_run": "exit 7"},
     )
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -309,14 +319,14 @@ def test_run_issue_attempt_logs_after_run_best_effort_failures(
 
     asyncio.run(run_test())
 
-    assert "event=hook_started hook=after_run" in caplog.text
-    assert "event=hook_failed hook=after_run" in caplog.text
-    assert "issue_id=issue-1" in caplog.text
-    assert "issue_identifier=SYM-123" in caplog.text
+    assert "event=hook_started hook=after_run" in harness_log_capture.text
+    assert "event=hook_failed hook=after_run" in harness_log_capture.text
+    assert "issue_id=issue-1" in harness_log_capture.text
+    assert "issue_identifier=SYM-123" in harness_log_capture.text
 
 
 def test_run_issue_attempt_logs_workspace_prepare_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -325,7 +335,6 @@ def test_run_issue_attempt_logs_workspace_prepare_failures(
         mode="stream_success",
         log_path=tmp_path / "messages.jsonl",
     )
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     def fail_cleanup(_self: WorkspaceManager, _workspace_path: Path) -> tuple[str, ...]:
         raise WorkspaceRemoveError("cleanup failed")
@@ -345,14 +354,14 @@ def test_run_issue_attempt_logs_workspace_prepare_failures(
 
     asyncio.run(run_test())
 
-    assert "event=workspace_prepare_failed" in caplog.text
-    assert "issue_id=issue-1" in caplog.text
-    assert "issue_identifier=SYM-123" in caplog.text
-    assert "error_code=workspace_remove_error" in caplog.text
+    assert "event=workspace_prepare_failed" in harness_log_capture.text
+    assert "issue_id=issue-1" in harness_log_capture.text
+    assert "issue_identifier=SYM-123" in harness_log_capture.text
+    assert "error_code=workspace_remove_error" in harness_log_capture.text
 
 
 def test_run_issue_attempt_logs_workspace_resolution_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
     config = build_config(
@@ -360,7 +369,6 @@ def test_run_issue_attempt_logs_workspace_resolution_failures(
         mode="stream_success",
         log_path=tmp_path / "messages.jsonl",
     )
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -375,8 +383,8 @@ def test_run_issue_attempt_logs_workspace_resolution_failures(
 
     asyncio.run(run_test())
 
-    assert "event=workspace_resolution_failed" in caplog.text
-    assert "error_code=invalid_workspace_identifier" in caplog.text
+    assert "event=workspace_resolution_failed" in harness_log_capture.text
+    assert "error_code=invalid_workspace_identifier" in harness_log_capture.text
 
 
 @pytest.mark.parametrize(
@@ -387,7 +395,7 @@ def test_run_issue_attempt_logs_workspace_resolution_failures(
     ],
 )
 def test_run_issue_attempt_logs_prompt_template_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     tmp_path: Path,
     prompt_template: str,
     error_code: str,
@@ -402,7 +410,6 @@ def test_run_issue_attempt_logs_prompt_template_failures(
         ),
         prompt_template=prompt_template,
     )
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -417,10 +424,10 @@ def test_run_issue_attempt_logs_prompt_template_failures(
 
     asyncio.run(run_test())
 
-    assert "event=prompt_template_failed" in caplog.text
-    assert "issue_id=issue-1" in caplog.text
-    assert "issue_identifier=SYM-123" in caplog.text
-    assert f"error_code={error_code}" in caplog.text
+    assert "event=prompt_template_failed" in harness_log_capture.text
+    assert "issue_id=issue-1" in harness_log_capture.text
+    assert "issue_identifier=SYM-123" in harness_log_capture.text
+    assert f"error_code={error_code}" in harness_log_capture.text
     assert not marker_path.exists()
 
 
@@ -432,7 +439,7 @@ def test_run_issue_attempt_logs_prompt_template_failures(
     ],
 )
 def test_run_issue_attempt_logs_hook_start_failures(
-    caplog: pytest.LogCaptureFixture,
+    harness_log_capture: pytest.LogCaptureFixture,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     hook_overrides: dict[str, str],
@@ -444,7 +451,6 @@ def test_run_issue_attempt_logs_hook_start_failures(
         log_path=tmp_path / "messages.jsonl",
         hook_overrides=hook_overrides,
     )
-    caplog.set_level(logging.INFO, logger="symphony.agent_runner.harness")
 
     async def fail_run_hook(*args: object, **kwargs: object) -> object:
         del args, kwargs
@@ -465,11 +471,11 @@ def test_run_issue_attempt_logs_hook_start_failures(
 
     asyncio.run(run_test())
 
-    assert f"event=hook_started hook={hook_name}" in caplog.text
-    assert f"event=hook_failed hook={hook_name}" in caplog.text
-    assert "message=\"Hook '" in caplog.text
-    assert "issue_id=issue-1" in caplog.text
-    assert "issue_identifier=SYM-123" in caplog.text
+    assert f"event=hook_started hook={hook_name}" in harness_log_capture.text
+    assert f"event=hook_failed hook={hook_name}" in harness_log_capture.text
+    assert "message=\"Hook '" in harness_log_capture.text
+    assert "issue_id=issue-1" in harness_log_capture.text
+    assert "issue_identifier=SYM-123" in harness_log_capture.text
 
 
 def test_run_issue_attempt_emits_stderr_diagnostic_events(tmp_path: Path) -> None:

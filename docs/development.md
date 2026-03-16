@@ -202,6 +202,36 @@ The environment variable names above (`PLANE_API_BASE_URL`, `PLANE_API_KEY`, `PL
 `PLANE_PROJECT_ID`) are conventional — the runtime only sees the resolved string value, so any
 name works as long as you reference it via `$VAR_NAME` in the workflow front matter.
 
+#### Plane self-host smoke recipe
+
+Use the front matter above in a repository-local `WORKFLOW.md`, then run the API
+and orchestrator against that same workflow from the repository root:
+
+```sh
+make dev-api
+```
+
+In a second terminal:
+
+```sh
+uv run python apps/api/manage.py run_orchestrator --port 9000
+```
+
+In a third terminal, confirm one read path and one write path. Replace
+`ENG-123` with an identifier returned by `/api/v1/state`:
+
+```sh
+curl http://127.0.0.1:8000/api/v1/state
+curl http://127.0.0.1:8000/api/v1/ENG-123
+curl -X POST http://127.0.0.1:8000/api/v1/tracker/issues/ENG-123/comments \
+  -H 'Content-Type: application/json' \
+  -d '{"body":"Ready for review"}'
+```
+
+Expect `/api/v1/state` to include Plane-backed issue identifiers and the
+comment request to return HTTP `200` with Symphony's normalized response
+envelope. When the smoke is complete, stop both local processes.
+
 ---
 
 ## uv Tool Install

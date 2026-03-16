@@ -56,7 +56,8 @@ def test_render_issue_prompt_supports_nested_iteration_and_retry_attempt() -> No
     assert rendered == "[backend][urgent] SYM-100:In Progress attempt=3"
 
 
-def test_render_issue_prompt_uses_fallback_for_empty_template() -> None:
+def test_render_issue_prompt_uses_tracker_neutral_fallback_for_empty_template() -> None:
+    assert DEFAULT_FALLBACK_PROMPT == "You are working on an issue from the configured tracker."
     assert render_issue_prompt("   ", build_issue()) == DEFAULT_FALLBACK_PROMPT
 
 
