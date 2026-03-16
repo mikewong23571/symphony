@@ -931,16 +931,13 @@ Subprocess launch parameters:
 - Invocation: `bash -lc <codex.command>`
 - Working directory: workspace path
 - Stdout/stderr: separate streams
-- Framing: line-delimited protocol messages on stdout (JSON-RPC-like JSON per line)
+- Transport: stdio-backed Codex app-server session; implementations may read protocol notifications
+  through an official SDK adapter or a compatible direct transport layer
 
 Notes:
 
 - The default command is `codex app-server`.
 - Approval policy, cwd, and prompt are expressed in the protocol messages in Section 10.2.
-
-Recommended additional process settings:
-
-- Max line size: 10 MB (for safe buffering)
 
 ### 10.2 Session Startup Handshake
 
@@ -948,8 +945,8 @@ Reference: https://developers.openai.com/codex/app-server/
 
 The client must send these protocol messages in order:
 
-Illustrative startup transcript (equivalent payload shapes are acceptable if they preserve the same
-semantics):
+Illustrative logical startup transcript (equivalent payload shapes are acceptable if they preserve
+the same semantics):
 
 ```json
 {"id":1,"method":"initialize","params":{"clientInfo":{"name":"symphony","version":"1.0"},"capabilities":{}}}
@@ -993,7 +990,7 @@ Session identifiers:
 
 ### 10.3 Streaming Turn Processing
 
-The client reads line-delimited messages until the turn terminates.
+The client reads protocol notifications until the turn terminates.
 
 Completion conditions:
 
@@ -1010,14 +1007,14 @@ Continuation processing:
 - The app-server subprocess should remain alive across those continuation turns and be stopped only
   when the worker run is ending.
 
-Line handling requirements:
+Transport handling requirements:
 
-- Read protocol messages from stdout only.
-- Buffer partial stdout lines until newline arrives.
-- Attempt JSON parse on complete stdout lines.
-- Stderr is not part of the protocol stream:
-  - ignore it or log it as diagnostics
-  - do not attempt protocol JSON parsing on stderr
+- Read protocol notifications from the active app-server transport abstraction.
+- If the implementation owns raw stdio parsing, treat stdout as the protocol stream and stderr as
+  diagnostics only.
+- If the implementation delegates transport parsing to an SDK, preserve the same logical behavior:
+  stderr remains diagnostics only, transport parse failures surface as session failures, and
+  message ordering remains compatible with this section's handshake and completion rules.
 
 ### 10.4 Emitted Runtime Events (Upstream to Orchestrator)
 
@@ -2056,8 +2053,11 @@ Unless otherwise noted, Sections 17.1 through 17.7 are `Core Conformance`. Bulle
 - `thread/start` and `turn/start` parse nested IDs and emit `session_started`
 - Request/response read timeout is enforced
 - Turn timeout is enforced
-- Partial JSON lines are buffered until newline
-- Stdout and stderr are handled separately; protocol JSON is parsed from stdout only
+- The runtime may use the official Codex SDK or another compatible transport adapter, but it must
+  preserve the documented handshake, notification ordering, timeout behavior, and diagnostic
+  handling
+- If the runtime owns raw stdio parsing, partial protocol lines are buffered until complete and
+  stderr is treated as diagnostics only
 - Non-JSON stderr lines are logged but do not crash parsing
 - Command/file-change approvals are handled according to the implementation's documented policy
 - Unsupported dynamic tool calls are rejected without stalling the session

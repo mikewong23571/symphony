@@ -1,3 +1,4 @@
 # Agent Runner Module
 
-Owns the Codex app-server subprocess client and event normalization.
+Owns the SDK-backed Codex app-server subprocess client, dynamic-tool policy hooks, and event
+normalization.

@@ -65,9 +65,16 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   `uv run ruff check apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner` -> `All checks passed!`,
   and `uv run mypy apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner` ->
   `Success: no issues found in 17 source files`.
-- [ ] 2026-03-16 07:37Z: Milestone 4 remains open. Remaining work: update any final developer docs
-  that describe the transport path if needed, then run repository-wide validation (`make format`,
-  `make lint`, `make typecheck`, `make test`) and record the evidence here.
+- [x] 2026-03-16 07:44Z: Completed the Milestone 4 documentation sweep. Updated `docs/SPEC.md` so
+  the app-server contract describes a transport-agnostic stdio session with SDK-compatible
+  notification handling instead of requiring repository-owned JSONL parsing, and updated
+  `apps/api/symphony/agent_runner/README.md` to describe the module as SDK-backed.
+- [x] 2026-03-16 07:46Z: Completed Milestone 4 validation with `make format`, `make lint`,
+  `make typecheck`, and `make test`. Evidence: `make format` reported `87 files left unchanged`
+  plus unchanged Prettier targets; `make lint` reported `All checks passed!` plus a clean frontend
+  eslint run; `make typecheck` reported `Success: no issues found in 86 source files` plus a clean
+  frontend `tsc --noEmit`; `make test` reported `376 passed in 16.78s` for backend pytest and
+  `28 passed` for frontend Vitest.
 
 ## Surprises & Discoveries
 
@@ -115,6 +122,12 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   `72 passed in 12.57s` while `apps/api/symphony/agent_runner/client.py` retained only SDK-backed
   callbacks.
 
+- Observation: `docs/SPEC.md` still described the execution layer as if Symphony itself owned raw
+  stdout JSONL framing even after the runtime had switched to the official SDK.
+  Evidence: before the M4 doc sweep, Section 10 required “line-delimited protocol messages on
+  stdout” and the Section 17 acceptance bullets required buffering partial JSON lines, which no
+  longer matched the repository’s production implementation in `apps/api/symphony/agent_runner/client.py`.
+
 ## Decision Log
 
 - Decision: migrate only the transport/client layer first and keep the current higher-level
@@ -157,6 +170,13 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   without leaving dead runtime code in the shipped module.
   Date/Author: 2026-03-16 / Codex
 
+- Decision: revise the spec to describe transport-level behavior in logical terms rather than
+  requiring repository-owned stdout JSONL parsing.
+  Rationale: after the SDK migration, the stable contract is handshake order, notification
+  semantics, timeout behavior, and stderr diagnostics handling. Requiring line-buffer management in
+  the spec would falsely constrain the implementation and contradict the current production code.
+  Date/Author: 2026-03-16 / Codex
+
 ## Outcomes & Retrospective
 
 Milestone 1 is now complete as an additive spike. `apps/api/symphony/agent_runner/client.py`
@@ -180,18 +200,23 @@ explicitly a fake-app-server regression harness rather than production runtime c
 that Symphony’s shipped transport layer is now exclusively SDK-backed while the test suite keeps
 the valuable malformed-JSONL coverage that motivated the temporary legacy path.
 
-Milestone 4 has not started yet. The remaining work is mostly closeout: confirm whether any
-developer-facing docs besides this ExecPlan need wording updates for the SDK-backed transport, then
-run and record the full repository validation commands required by the project workflow.
+Milestone 4 is now complete. The remaining developer-facing transport wording has been updated in
+`docs/SPEC.md` and `apps/api/symphony/agent_runner/README.md` so the repository now describes an
+SDK-backed or otherwise transport-abstracted app-server client instead of claiming that production
+code owns raw JSONL framing. Repository-wide validation then passed cleanly through `make format`,
+`make lint`, `make typecheck`, and `make test`, so the migration is closed out with both code and
+documentation aligned.
 
 ## Context and Orientation
 
-The current handwritten transport lives mainly in `apps/api/symphony/agent_runner/client.py`. That
-file starts `codex app-server` as a subprocess, writes JSON lines to stdin, reads JSON lines from
-stdout, tracks pending messages that arrive out of order, and handles the startup handshake for
+The production transport now lives mainly in `apps/api/symphony/agent_runner/client.py`. That file
+starts `codex app-server` through the official `codex_app_server_sdk`, adapts SDK requests and
+notifications into Symphony’s `AppServerSession` abstraction, and handles the startup handshake for
 `initialize`, `thread/start`, and `turn/start`. `runner.py` sits one level above it and interprets
 stream messages during a turn. `harness.py` is the orchestration-facing wrapper that starts a
-session, runs turns, refreshes tracker state, and closes the session.
+session, runs turns, refreshes tracker state, and closes the session. The old raw JSONL handshake
+reader now survives only in `apps/api/tests/unit/agent_runner/legacy_transport.py` as a test
+harness for malformed-stream regressions.
 
 The repository now also contains `apps/api/symphony/agent_runner/dynamic_tool.py`, which owns the
 local `linear_graphql` tool spec and execution. That logic must remain available after the SDK
@@ -402,7 +427,7 @@ The critical dependency boundary is this: the SDK owns transport, message framin
 typed notification decoding; Symphony owns workflow policy, timeout policy, event normalization,
 dynamic-tool execution, tracker integration, and issue-run orchestration.
 
-Revision note: updated on 2026-03-16 after Milestone 3 landed. The plan now records that
-`apps/api/symphony/agent_runner/client.py` is SDK-only for production use, moves malformed-JSONL
-regression transport into `apps/api/tests/unit/agent_runner/legacy_transport.py`, and includes the
-focused validation evidence for the M3 cleanup pass.
+Revision note: updated on 2026-03-16 to close Milestone 4. The plan now records the spec and README
+wording changes that align repository docs with the SDK-backed transport, updates the context
+sections so they describe the current production code accurately, and includes the full
+repository-wide validation evidence proving the migration landed cleanly.
