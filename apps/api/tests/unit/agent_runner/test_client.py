@@ -4,8 +4,10 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import symphony.agent_runner.client as client_module
 from symphony.agent_runner import (
     AppServerProtocolError,
     AppServerResponseTimeoutError,
@@ -62,6 +64,180 @@ def test_start_app_server_session_ignores_interleaved_notifications(tmp_path: Pa
             await session.aclose()
 
     asyncio.run(run_test())
+
+
+def test_start_app_server_session_advertises_dynamic_tools(tmp_path: Path) -> None:
+    log_path = tmp_path / "messages.jsonl"
+
+    async def run_test() -> None:
+        session = await start_fake_app_server_session(
+            tmp_path,
+            log_path=log_path,
+            mode="success",
+            dynamic_tools=[
+                {
+                    "name": "linear_graphql",
+                    "description": "Execute Linear GraphQL.",
+                    "inputSchema": {"type": "object"},
+                }
+            ],
+        )
+        try:
+            assert session.session_id == "thr_123-turn_1"
+        finally:
+            await session.aclose()
+
+    asyncio.run(run_test())
+
+    logged_messages = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert logged_messages[2]["params"]["dynamicTools"] == [
+        {
+            "name": "linear_graphql",
+            "description": "Execute Linear GraphQL.",
+            "inputSchema": {"type": "object"},
+        }
+    ]
+
+
+def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_client = FakeSdkClient(
+        responses=[
+            {"thread": {"id": "thr_sdk"}},
+            {"turn": {"id": "turn_sdk"}},
+        ]
+    )
+    monkeypatch.setattr(
+        client_module,
+        "_load_sdk_bindings",
+        lambda: client_module._SdkBindings(
+            client_class=FakeSdkClientFactory(fake_client),
+            protocol_error_class=FakeSdkProtocolError,
+            timeout_error_class=FakeSdkTimeoutError,
+            transport_error_class=FakeSdkTransportError,
+        ),
+    )
+
+    async def run_test() -> None:
+        session = await client_module.start_sdk_app_server_session(
+            command="codex app-server",
+            workspace_path=tmp_path,
+            prompt_text="Summarize this repo.",
+            title="SYM-123: SDK Handshake",
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            approval_policy="never",
+            thread_sandbox="workspace-write",
+            turn_sandbox_policy={"type": "workspace-write"},
+            read_timeout_ms=1_500,
+            capabilities={"roots": True},
+            dynamic_tools=[
+                {
+                    "name": "linear_graphql",
+                    "description": "Execute Linear GraphQL.",
+                    "inputSchema": {"type": "object"},
+                }
+            ],
+            model="gpt-5.1-codex",
+        )
+        try:
+            assert session.thread_id == "thr_sdk"
+            assert session.turn_id == "turn_sdk"
+            assert session.session_id == "thr_sdk-turn_sdk"
+            assert session.process.pid == 4321
+        finally:
+            await session.aclose()
+
+    asyncio.run(run_test())
+
+    assert fake_client.started is True
+    assert fake_client.closed is True
+    assert fake_client.connect_kwargs == {
+        "command": ["bash", "-lc", "codex app-server"],
+        "cwd": str(tmp_path.resolve()),
+        "connect_timeout": 1.5,
+        "request_timeout": 1.5,
+        "inactivity_timeout": None,
+    }
+    assert fake_client.initialize_calls == [
+        (
+            {
+                "clientInfo": {"name": "symphony", "version": "0.1.0"},
+                "capabilities": {"roots": True},
+            },
+            1.5,
+        )
+    ]
+    assert fake_client.request_calls == [
+        (
+            "thread/start",
+            {
+                "cwd": str(tmp_path.resolve()),
+                "approvalPolicy": "never",
+                "sandbox": "workspace-write",
+                "model": "gpt-5.1-codex",
+                "dynamicTools": [
+                    {
+                        "name": "linear_graphql",
+                        "description": "Execute Linear GraphQL.",
+                        "inputSchema": {"type": "object"},
+                    }
+                ],
+            },
+            1.5,
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": "thr_sdk",
+                "input": [{"type": "text", "text": "Summarize this repo."}],
+                "cwd": str(tmp_path.resolve()),
+                "title": "SYM-123: SDK Handshake",
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "workspaceWrite"},
+            },
+            1.5,
+        ),
+    ]
+
+
+def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_client = FakeSdkClient(
+        responses=[FakeSdkProtocolError("thread/start failed: bad request")]
+    )
+    monkeypatch.setattr(
+        client_module,
+        "_load_sdk_bindings",
+        lambda: client_module._SdkBindings(
+            client_class=FakeSdkClientFactory(fake_client),
+            protocol_error_class=FakeSdkProtocolError,
+            timeout_error_class=FakeSdkTimeoutError,
+            transport_error_class=FakeSdkTransportError,
+        ),
+    )
+
+    with pytest.raises(AppServerProtocolError, match="thread/start failed: bad request"):
+        asyncio.run(
+            client_module.start_sdk_app_server_session(
+                command="codex app-server",
+                workspace_path=tmp_path,
+                prompt_text="Summarize this repo.",
+                title="SYM-123: SDK Handshake",
+                service_info=ServiceInfo(name="symphony", version="0.1.0"),
+                approval_policy="never",
+                thread_sandbox="workspace-write",
+                turn_sandbox_policy={"type": "workspace-write"},
+                read_timeout_ms=1_000,
+            )
+        )
+
+    assert fake_client.closed is True
 
 
 @pytest.mark.parametrize("mode", ["missing_thread_id", "missing_turn_id"])
@@ -227,3 +403,64 @@ async def run_handshake(
         mode=mode,
         read_timeout_ms=read_timeout_ms,
     )
+
+
+class FakeSdkProtocolError(Exception):
+    pass
+
+
+class FakeSdkTimeoutError(Exception):
+    pass
+
+
+class FakeSdkTransportError(Exception):
+    pass
+
+
+class FakeSdkClientFactory:
+    def __init__(self, client: FakeSdkClient) -> None:
+        self._client = client
+
+    def connect_stdio(self, **kwargs: object) -> FakeSdkClient:
+        self._client.connect_kwargs = dict(kwargs)
+        return self._client
+
+
+class FakeSdkClient:
+    def __init__(self, responses: list[object]) -> None:
+        self.responses = list(responses)
+        self.started = False
+        self.closed = False
+        self.initialize_calls: list[tuple[dict[str, object], float | None]] = []
+        self.request_calls: list[tuple[str, dict[str, object], float | None]] = []
+        self.connect_kwargs: dict[str, object] | None = None
+        self._transport = SimpleNamespace(_proc=SimpleNamespace(pid=4321, returncode=None))
+
+    async def start(self) -> FakeSdkClient:
+        self.started = True
+        return self
+
+    async def initialize(
+        self,
+        params: dict[str, object],
+        *,
+        timeout: float | None = None,
+    ) -> object:
+        self.initialize_calls.append((params, timeout))
+        return {"serverInfo": {"name": "fake"}}
+
+    async def request(
+        self,
+        method: str,
+        params: dict[str, object],
+        *,
+        timeout: float | None = None,
+    ) -> object:
+        self.request_calls.append((method, params, timeout))
+        response = self.responses.pop(0)
+        if isinstance(response, FakeSdkProtocolError | FakeSdkTimeoutError | FakeSdkTransportError):
+            raise response
+        return response
+
+    async def close(self) -> None:
+        self.closed = True

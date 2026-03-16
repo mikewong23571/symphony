@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Symphony" }]
 dependencies = [
+  "codex-app-server-sdk==0.3.2",
   "django>=5.2,<5.3",
   "djangorestframework>=3.15,<3.16",
   "drf-spectacular>=0.28,<0.29",

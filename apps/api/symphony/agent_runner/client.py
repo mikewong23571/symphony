@@ -3,7 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -61,8 +62,13 @@ class AppServerSession:
     _stderr_task: asyncio.Task[None] | None = field(default=None, repr=False)
     _pending_messages: deque[Mapping[str, Any]] = field(default_factory=deque, repr=False)
     _diagnostic_context: AppServerDiagnosticContext | None = field(default=None, repr=False)
+    _close_callback: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
 
     async def aclose(self) -> None:
+        if self._close_callback is not None:
+            await self._close_callback()
+            return
+
         if self.process.returncode is None:
             self.process.terminate()
             try:
@@ -87,6 +93,7 @@ async def start_app_server_session(
     turn_sandbox_policy: Mapping[str, Any],
     read_timeout_ms: int,
     capabilities: Mapping[str, Any] | None = None,
+    dynamic_tools: Sequence[Mapping[str, Any]] | None = None,
     model: str | None = None,
     stderr_callback: (
         Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
@@ -156,6 +163,8 @@ async def start_app_server_session(
         }
         if model is not None:
             thread_start_params["model"] = model
+        if dynamic_tools:
+            thread_start_params["dynamicTools"] = [dict(tool_spec) for tool_spec in dynamic_tools]
 
         await _send_message(
             process,
@@ -220,6 +229,135 @@ async def start_app_server_session(
         _stderr_task=stderr_task,
         _pending_messages=pending_messages,
         _diagnostic_context=diagnostic_context,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _SdkBindings:
+    client_class: Any
+    protocol_error_class: type[Exception]
+    timeout_error_class: type[Exception]
+    transport_error_class: type[Exception]
+
+
+def _load_sdk_bindings() -> _SdkBindings:
+    try:
+        from codex_app_server_sdk.client import CodexClient
+        from codex_app_server_sdk.errors import (
+            CodexProtocolError,
+            CodexTimeoutError,
+            CodexTransportError,
+        )
+    except ImportError as exc:  # pragma: no cover - exercised via real dependency resolution
+        raise AppServerStartupError("The codex-app-server-sdk package is not installed.") from exc
+
+    return _SdkBindings(
+        client_class=CodexClient,
+        protocol_error_class=CodexProtocolError,
+        timeout_error_class=CodexTimeoutError,
+        transport_error_class=CodexTransportError,
+    )
+
+
+async def start_sdk_app_server_session(
+    *,
+    command: str,
+    workspace_path: Path,
+    prompt_text: str,
+    title: str,
+    service_info: ServiceInfo,
+    approval_policy: str,
+    thread_sandbox: str,
+    turn_sandbox_policy: Mapping[str, Any],
+    read_timeout_ms: int,
+    capabilities: Mapping[str, Any] | None = None,
+    dynamic_tools: Sequence[Mapping[str, Any]] | None = None,
+    model: str | None = None,
+) -> AppServerSession:
+    bindings = _load_sdk_bindings()
+    workspace_cwd = workspace_path.resolve()
+    timeout_seconds = _milliseconds_to_seconds(read_timeout_ms)
+    client = bindings.client_class.connect_stdio(
+        command=["bash", "-lc", command],
+        cwd=str(workspace_cwd),
+        connect_timeout=timeout_seconds,
+        request_timeout=timeout_seconds,
+        inactivity_timeout=None,
+    )
+
+    try:
+        await client.start()
+        await client.initialize(
+            {
+                "clientInfo": {
+                    "name": service_info.name,
+                    "version": service_info.version,
+                },
+                "capabilities": dict(capabilities or {}),
+            },
+            timeout=timeout_seconds,
+        )
+
+        thread_start_params: dict[str, Any] = {
+            "cwd": str(workspace_cwd),
+            "approvalPolicy": approval_policy,
+            "sandbox": thread_sandbox,
+        }
+        if model is not None:
+            thread_start_params["model"] = model
+        if dynamic_tools:
+            thread_start_params["dynamicTools"] = [dict(tool_spec) for tool_spec in dynamic_tools]
+
+        thread_result = await client.request(
+            "thread/start",
+            thread_start_params,
+            timeout=timeout_seconds,
+        )
+        if not isinstance(thread_result, Mapping):
+            raise AppServerProtocolError("App-server response id 2 is missing a result object.")
+        thread_id = _extract_required_id(thread_result, outer_key="thread")
+
+        turn_result = await client.request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": prompt_text}],
+                "cwd": str(workspace_cwd),
+                "title": title,
+                "approvalPolicy": approval_policy,
+                "sandboxPolicy": _normalize_sandbox_policy(turn_sandbox_policy),
+            },
+            timeout=timeout_seconds,
+        )
+        if not isinstance(turn_result, Mapping):
+            raise AppServerProtocolError("App-server response id 3 is missing a result object.")
+        turn_id = _extract_required_id(turn_result, outer_key="turn")
+    except bindings.timeout_error_class as exc:
+        with suppress(Exception):
+            await client.close()
+        raise AppServerResponseTimeoutError(
+            "Timed out waiting for app-server handshake response."
+        ) from exc
+    except bindings.protocol_error_class as exc:
+        with suppress(Exception):
+            await client.close()
+        raise AppServerProtocolError(str(exc)) from exc
+    except bindings.transport_error_class as exc:
+        with suppress(Exception):
+            await client.close()
+        raise AppServerStartupError("Could not start the Codex app-server subprocess.") from exc
+    except Exception:
+        with suppress(Exception):
+            await client.close()
+        raise
+
+    return AppServerSession(
+        process=_extract_sdk_process(client),
+        thread_id=thread_id,
+        turn_id=turn_id,
+        session_id=f"{thread_id}-{turn_id}",
+        next_request_id=FIRST_RUNTIME_REQUEST_ID,
+        _close_callback=client.close,
     )
 
 
@@ -422,6 +560,18 @@ def _normalize_sandbox_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
         stripped = sandbox_type.strip()
         normalized["type"] = _LEGACY_SANDBOX_POLICY_TYPES.get(stripped, stripped)
     return normalized
+
+
+def _milliseconds_to_seconds(read_timeout_ms: int) -> float:
+    return max(read_timeout_ms / 1000, 0.001)
+
+
+def _extract_sdk_process(client: Any) -> Any:
+    transport = getattr(client, "_transport", None)
+    process = getattr(transport, "_proc", None)
+    if process is None or not hasattr(process, "pid") or not hasattr(process, "returncode"):
+        raise AppServerStartupError("SDK-backed app-server transport did not expose a subprocess.")
+    return process
 
 
 def _format_response_error(expected_id: int, error: object) -> str:
