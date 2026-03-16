@@ -481,6 +481,20 @@ class LinearTrackerClient:
         )
         return _decode_graphql_payload(response)
 
+    def execute_raw_graphql(
+        self,
+        *,
+        query: str,
+        variables: Mapping[str, object],
+    ) -> Mapping[str, Any]:
+        transport = self.transport or _default_linear_transport
+        response = self._send_graphql_request(
+            transport=transport,
+            query=query,
+            variables=variables,
+        )
+        return _decode_graphql_payload(response, allow_graphql_errors=True)
+
     def _send_graphql_request(
         self,
         *,
@@ -550,7 +564,11 @@ def _normalize_issue_ids(issue_ids: Sequence[str]) -> list[str]:
     return normalized_issue_ids
 
 
-def _decode_graphql_payload(response: LinearTransportResponse) -> Mapping[str, Any]:
+def _decode_graphql_payload(
+    response: LinearTransportResponse,
+    *,
+    allow_graphql_errors: bool = False,
+) -> Mapping[str, Any]:
     try:
         payload = json.loads(response.body)
     except json.JSONDecodeError as exc:
@@ -560,7 +578,7 @@ def _decode_graphql_payload(response: LinearTransportResponse) -> Mapping[str, A
         raise LinearPayloadError("Linear GraphQL response body must be a JSON object.")
 
     graphql_errors = payload.get("errors")
-    if graphql_errors:
+    if graphql_errors and not allow_graphql_errors:
         raise LinearGraphQLError("Linear GraphQL response returned top-level errors.")
 
     return payload

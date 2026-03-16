@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
@@ -12,6 +13,7 @@ from .client import (
     read_protocol_message,
     send_protocol_message,
 )
+from .dynamic_tool import DynamicToolExecutor
 from .events import AgentRuntimeEvent, TurnResult, extract_usage_snapshot, utcnow
 
 logger = logging.getLogger(__name__)
@@ -30,6 +32,7 @@ async def stream_turn(
     approval_policy: str,
     turn_timeout_ms: int,
     stall_timeout_ms: int,
+    tool_executor: DynamicToolExecutor | None = None,
     on_event: Callable[[AgentRuntimeEvent], Awaitable[None]] | None = None,
 ) -> TurnResult:
     loop = asyncio.get_running_loop()
@@ -193,11 +196,15 @@ async def stream_turn(
             )
 
         if _is_tool_call_request(message):
-            await _reject_unsupported_tool_call(session, message)
+            event_name = await _handle_tool_call_request(
+                session,
+                message,
+                tool_executor=tool_executor,
+            )
             await _emit_runtime_event(
                 session,
                 on_event=on_event,
-                event_name="unsupported_tool_call",
+                event_name=event_name,
                 payload=_build_payload(message),
                 usage=usage,
             )
@@ -324,6 +331,108 @@ async def _reject_unsupported_tool_call(
             },
         },
     )
+
+
+async def _handle_tool_call_request(
+    session: AppServerSession,
+    message: Mapping[str, Any],
+    *,
+    tool_executor: DynamicToolExecutor | None,
+) -> str:
+    request_id = message.get("id")
+    if request_id is None:
+        return "unsupported_tool_call"
+
+    tool_name, arguments = _extract_tool_call(message)
+    if tool_executor is None:
+        await _reject_unsupported_tool_call(session, message)
+        return "unsupported_tool_call"
+
+    try:
+        result = _normalize_dynamic_tool_result(tool_executor(tool_name, arguments))
+    except Exception as exc:  # noqa: BLE001
+        result = _normalize_dynamic_tool_result(
+            {
+                "success": False,
+                "output": _dynamic_tool_output(
+                    {
+                        "error": {
+                            "message": "Dynamic tool execution failed.",
+                            "reason": repr(exc),
+                        }
+                    }
+                ),
+            }
+        )
+
+    await send_protocol_message(session, {"id": request_id, "result": result})
+
+    if result.get("success") is True:
+        return "tool_call_completed"
+    if not tool_name:
+        return "unsupported_tool_call"
+    return "tool_call_failed"
+
+
+def _extract_tool_call(message: Mapping[str, Any]) -> tuple[str | None, object]:
+    params = message.get("params")
+    if not isinstance(params, Mapping):
+        return (None, {})
+
+    tool_call = params.get("toolCall")
+    if isinstance(tool_call, Mapping):
+        tool_name = tool_call.get("toolName")
+        if isinstance(tool_name, str) and tool_name.strip():
+            arguments = tool_call.get("arguments")
+            return (tool_name.strip(), arguments if arguments is not None else {})
+
+    for key in ("tool", "name", "toolName"):
+        tool_name = params.get(key)
+        if isinstance(tool_name, str) and tool_name.strip():
+            arguments = params.get("arguments")
+            return (tool_name.strip(), arguments if arguments is not None else {})
+
+    return (None, params.get("arguments", {}))
+
+
+def _normalize_dynamic_tool_result(result: object) -> dict[str, Any]:
+    if isinstance(result, Mapping):
+        success = result.get("success")
+        if isinstance(success, bool):
+            normalized_result = dict(result)
+            output = normalized_result.get("output")
+            if not isinstance(output, str):
+                output = _dynamic_tool_output(result)
+            content_items = normalized_result.get("contentItems")
+            if not isinstance(content_items, list):
+                content_items = _dynamic_tool_content_items(output)
+            normalized_result["output"] = output
+            normalized_result["contentItems"] = content_items
+            return normalized_result
+
+    output = _dynamic_tool_output(result)
+    return {
+        "success": True,
+        "output": output,
+        "contentItems": _dynamic_tool_content_items(output),
+    }
+
+
+def _dynamic_tool_output(result: object) -> str:
+    if isinstance(result, str):
+        return result
+    return _json_dumps(result)
+
+
+def _dynamic_tool_content_items(output: str) -> list[dict[str, str]]:
+    return [{"type": "inputText", "text": output}]
+
+
+def _json_dumps(value: object) -> str:
+    try:
+        return json.dumps(value, indent=2)
+    except TypeError:
+        return repr(value)
 
 
 def _extract_error_message(message: Mapping[str, Any]) -> str | None:

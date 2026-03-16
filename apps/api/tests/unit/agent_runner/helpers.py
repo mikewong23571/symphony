@@ -23,6 +23,7 @@ async def start_fake_app_server_session(
     mode: str,
     read_timeout_ms: int = 1_000,
     approval_policy: str = "never",
+    dynamic_tools: list[dict[str, object]] | None = None,
 ) -> AppServerSession:
     log_path.write_text("", encoding="utf-8")
     command = (
@@ -41,5 +42,6 @@ async def start_fake_app_server_session(
         turn_sandbox_policy={"type": "workspace-write"},
         read_timeout_ms=read_timeout_ms,
         capabilities={},
+        dynamic_tools=dynamic_tools,
         model="gpt-5.1-codex",
     )

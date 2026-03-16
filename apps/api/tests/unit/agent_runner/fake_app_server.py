@@ -177,6 +177,26 @@ if mode == "tool_call_unsupported":
     send_turn_completed("turn_1")
     raise SystemExit(0)
 
+if mode == "tool_call_supported":
+    send(
+        {
+            "id": "tool_1",
+            "method": "item/tool/call",
+            "params": {
+                "name": "linear_graphql",
+                "arguments": {"query": "query Viewer { viewer { id } }"},
+            },
+        }
+    )
+    tool_response = read_message()
+    if tool_response.get("id") != "tool_1":
+        raise SystemExit(2)
+    result = tool_response.get("result")
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise SystemExit(2)
+    send_turn_completed("turn_1")
+    raise SystemExit(0)
+
 if mode == "user_input_required":
     send(
         {

@@ -22,6 +22,7 @@ from .client import (
     start_app_server_session,
     start_next_turn,
 )
+from .dynamic_tool import build_dynamic_tool_runtime
 from .events import AgentRuntimeEvent, utcnow
 from .prompting import (
     PromptTemplateError,
@@ -90,6 +91,7 @@ async def run_issue_attempt(
         if on_event is not None
         else None
     )
+    dynamic_tool_runtime = build_dynamic_tool_runtime(config)
 
     try:
         prompt_text = render_issue_prompt(config.prompt_template, current_issue, attempt=attempt)
@@ -127,6 +129,7 @@ async def run_issue_attempt(
             thread_sandbox=thread_sandbox,
             turn_sandbox_policy=turn_sandbox_policy,
             read_timeout_ms=config.codex.read_timeout_ms,
+            dynamic_tools=dynamic_tool_runtime.tool_specs,
             stderr_callback=stderr_callback,
         )
         await _emit_worker_event(
@@ -145,6 +148,7 @@ async def run_issue_attempt(
                 approval_policy=approval_policy,
                 turn_timeout_ms=config.codex.turn_timeout_ms,
                 stall_timeout_ms=config.codex.stall_timeout_ms,
+                tool_executor=dynamic_tool_runtime.executor,
                 on_event=on_event,
             )
             turns_run += 1

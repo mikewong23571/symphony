@@ -237,6 +237,57 @@ def test_stream_turn_rejects_unsupported_tool_calls(tmp_path: Path) -> None:
     assert logged_messages[-1]["result"]["error"] == "unsupported_tool_call"
 
 
+def test_stream_turn_executes_supported_tool_calls(tmp_path: Path) -> None:
+    log_path = tmp_path / "messages.jsonl"
+
+    async def run_test() -> None:
+        events: list[AgentRuntimeEvent] = []
+        session = await start_fake_app_server_session(
+            tmp_path,
+            log_path=log_path,
+            mode="tool_call_supported",
+        )
+        try:
+            result = await stream_turn(
+                session,
+                approval_policy="never",
+                turn_timeout_ms=1_000,
+                stall_timeout_ms=1_000,
+                tool_executor=lambda tool, arguments: {
+                    "success": True,
+                    "output": json.dumps(
+                        {
+                            "tool": tool,
+                            "arguments": arguments,
+                        }
+                    ),
+                },
+                on_event=lambda event: collect_events(events, event),
+            )
+        finally:
+            await session.aclose()
+
+        assert result.outcome == "completed"
+        assert [event.event for event in events] == [
+            "tool_call_completed",
+            "turn_completed",
+        ]
+
+    asyncio.run(run_test())
+
+    logged_messages = [
+        json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert logged_messages[-1]["id"] == "tool_1"
+    assert logged_messages[-1]["result"]["success"] is True
+    assert logged_messages[-1]["result"]["contentItems"] == [
+        {
+            "type": "inputText",
+            "text": logged_messages[-1]["result"]["output"],
+        }
+    ]
+
+
 def test_stream_turn_handles_messages_buffered_during_continuation_turn_start(
     tmp_path: Path,
 ) -> None:
