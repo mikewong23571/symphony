@@ -9,7 +9,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import symphony.agent_runner.client as client_module
 import symphony.agent_runner.harness as harness_module
 from symphony.agent_runner import AgentRuntimeEvent, run_issue_attempt
 from symphony.agent_runner.client import AppServerStartupError
@@ -20,6 +19,7 @@ from symphony.workflow.loader import WorkflowDefinition
 from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
 
 from .helpers import FAKE_APP_SERVER_PATH, collect_events
+from .legacy_transport import start_legacy_app_server_session
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def use_legacy_app_server_transport(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         harness_module,
         "start_app_server_session",
-        client_module._start_legacy_app_server_session,
+        start_legacy_app_server_session,
     )
 
 

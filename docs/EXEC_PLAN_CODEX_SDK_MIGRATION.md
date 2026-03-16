@@ -56,6 +56,18 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   `uv run pytest apps/api/tests/unit/tracker/test_linear_client.py -q` -> `28 passed in 0.05s`,
   `uv run ruff check apps/api/symphony/tracker/linear_client.py apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner`,
   and `uv run mypy apps/api/symphony/tracker/linear_client.py apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner`.
+- [x] 2026-03-16 07:37Z: Completed Milestone 3. Removed the handwritten JSONL transport path from
+  `apps/api/symphony/agent_runner/client.py`, reduced `AppServerSession` to callback-backed SDK
+  adaptation plus stderr diagnostics, and moved the fake-app-server JSONL handshake/stream logic
+  into the test-only helper `apps/api/tests/unit/agent_runner/legacy_transport.py`.
+- [x] 2026-03-16 07:37Z: Validated the Milestone 3 surface with
+  `uv run pytest apps/api/tests/unit/agent_runner -q` -> `72 passed in 12.57s`,
+  `uv run ruff check apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner` -> `All checks passed!`,
+  and `uv run mypy apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner` ->
+  `Success: no issues found in 17 source files`.
+- [ ] 2026-03-16 07:37Z: Milestone 4 remains open. Remaining work: update any final developer docs
+  that describe the transport path if needed, then run repository-wide validation (`make format`,
+  `make lint`, `make typecheck`, `make test`) and record the evidence here.
 
 ## Surprises & Discoveries
 
@@ -96,6 +108,13 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   handwritten JSONL loop, so SDK-first runtime tests were added separately while legacy transport
   remains available as an internal helper.
 
+- Observation: the malformed-JSONL regression coverage can be preserved without keeping any raw
+  JSONL transport code in production modules.
+  Evidence: after moving the old stdout/stderr/request-id logic into
+  `apps/api/tests/unit/agent_runner/legacy_transport.py`, the full focused suite still reported
+  `72 passed in 12.57s` while `apps/api/symphony/agent_runner/client.py` retained only SDK-backed
+  callbacks.
+
 ## Decision Log
 
 - Decision: migrate only the transport/client layer first and keep the current higher-level
@@ -130,6 +149,14 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   startup path first proves feasibility without breaking the current runner.
   Date/Author: 2026-03-16 / Codex
 
+- Decision: isolate the fake-app-server JSONL transport in test-only code instead of keeping a
+  hidden legacy runtime branch inside `client.py`.
+  Rationale: Milestone 3 requires production ownership of low-level JSON-RPC transport to disappear,
+  but the repository still benefits from regression tests that exercise malformed lines, EOF, and
+  oversized notifications against a real subprocess. A test-local helper preserves that coverage
+  without leaving dead runtime code in the shipped module.
+  Date/Author: 2026-03-16 / Codex
+
 ## Outcomes & Retrospective
 
 Milestone 1 is now complete as an additive spike. `apps/api/symphony/agent_runner/client.py`
@@ -145,6 +172,17 @@ than to raw SDK objects. That adapter now owns exactly the Symphony-specific pie
 streamed turns: notification reads, server-request responses, continuation-turn startup, stderr
 diagnostics, and transport-error normalization. The main remaining work for Milestone 3 is to
 delete or isolate the handwritten JSONL code that now survives primarily for tests.
+
+Milestone 3 is now complete. `apps/api/symphony/agent_runner/client.py` no longer owns raw stdout
+parsing, request id sequencing, pending notification queues, or handwritten handshake matching.
+Those behaviors now live only in `apps/api/tests/unit/agent_runner/legacy_transport.py`, which is
+explicitly a fake-app-server regression harness rather than production runtime code. The result is
+that Symphony’s shipped transport layer is now exclusively SDK-backed while the test suite keeps
+the valuable malformed-JSONL coverage that motivated the temporary legacy path.
+
+Milestone 4 has not started yet. The remaining work is mostly closeout: confirm whether any
+developer-facing docs besides this ExecPlan need wording updates for the SDK-backed transport, then
+run and record the full repository validation commands required by the project workflow.
 
 ## Context and Orientation
 
@@ -364,6 +402,7 @@ The critical dependency boundary is this: the SDK owns transport, message framin
 typed notification decoding; Symphony owns workflow policy, timeout policy, event normalization,
 dynamic-tool execution, tracker integration, and issue-run orchestration.
 
-Revision note: updated on 2026-03-16 after Milestone 1 landed. The plan now reflects the released
-SDK package shape (`codex_app_server_sdk.CodexClient`), records the additive handshake spike, and
-captures the notification-stream gap that still blocks the full transport swap.
+Revision note: updated on 2026-03-16 after Milestone 3 landed. The plan now records that
+`apps/api/symphony/agent_runner/client.py` is SDK-only for production use, moves malformed-JSONL
+regression transport into `apps/api/tests/unit/agent_runner/legacy_transport.py`, and includes the
+focused validation evidence for the M3 cleanup pass.

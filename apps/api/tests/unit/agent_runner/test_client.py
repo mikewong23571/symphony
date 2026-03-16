@@ -24,6 +24,7 @@ from .helpers import (
     install_fake_sdk_bindings,
     start_fake_app_server_session,
 )
+from .legacy_transport import start_legacy_app_server_session
 
 
 def test_start_app_server_session_completes_handshake_and_returns_ids(tmp_path: Path) -> None:
@@ -392,7 +393,7 @@ def test_start_app_server_session_forwards_stderr_lines_to_callback(tmp_path: Pa
     async def run_test() -> None:
         diagnostics: list[dict[str, object | None]] = []
 
-        session = await client_module._start_legacy_app_server_session(
+        session = await start_legacy_app_server_session(
             command=command,
             workspace_path=tmp_path,
             prompt_text="Summarize this repo.",

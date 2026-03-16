@@ -10,6 +10,8 @@ import symphony.agent_runner.client as client_module
 from symphony.agent_runner import AgentRuntimeEvent, AppServerSession
 from symphony.common.types import ServiceInfo
 
+from .legacy_transport import start_legacy_app_server_session
+
 FAKE_APP_SERVER_PATH = Path(__file__).with_name("fake_app_server.py")
 
 
@@ -35,7 +37,7 @@ async def start_fake_app_server_session(
         f"{sys.executable} {FAKE_APP_SERVER_PATH}"
     )
 
-    return await client_module._start_legacy_app_server_session(
+    return await start_legacy_app_server_session(
         command=command,
         workspace_path=tmp_path,
         prompt_text="Summarize this repo.",
