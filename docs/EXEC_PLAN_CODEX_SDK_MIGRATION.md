@@ -44,10 +44,18 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   `uv run pytest apps/api/tests/unit/agent_runner/test_client.py -q` -> `13 passed in 3.03s`,
   `uv run ruff check apps/api/symphony/agent_runner/client.py apps/api/tests/unit/agent_runner/test_client.py`,
   and `uv run mypy apps/api/symphony/agent_runner/client.py apps/api/tests/unit/agent_runner/test_client.py`.
-- [ ] Rewire turn streaming to consume SDK notifications while retaining Symphony’s timeout,
-  approval, user-input, and dynamic-tool semantics.
-- [ ] Update tests, validation commands, and dependency metadata so the repository documents and
-  verifies the SDK-backed path.
+- [x] 2026-03-16 16:45Z: Completed Milestone 2. `start_app_server_session(...)` now defaults to
+  the SDK-backed transport, `AppServerSession` carries adapter callbacks for SDK notification
+  reads / request replies / continuation turns, and `runner.py` now exercises those callbacks
+  without changing higher-level timeout or event semantics.
+- [x] 2026-03-16 16:45Z: Added focused SDK-backed streaming tests for approval handling, tool
+  execution, and continuation turns; kept the legacy fake-app-server path only as an internal test
+  helper for JSONL regression coverage and harness tests.
+- [x] 2026-03-16 16:45Z: Validated the Milestone 2 surface with
+  `uv run pytest apps/api/tests/unit/agent_runner -q` -> `72 passed in 12.50s`,
+  `uv run pytest apps/api/tests/unit/tracker/test_linear_client.py -q` -> `28 passed in 0.05s`,
+  `uv run ruff check apps/api/symphony/tracker/linear_client.py apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner`,
+  and `uv run mypy apps/api/symphony/tracker/linear_client.py apps/api/symphony/agent_runner apps/api/tests/unit/agent_runner`.
 
 ## Surprises & Discoveries
 
@@ -75,6 +83,18 @@ the hood, and the repository no longer owns the lowest-level app-server transpor
   feature set.
   Evidence: `codex_app_server_sdk.models.ThreadConfig` includes `approval_policy`, `sandbox`, and
   `cwd`, but does not include `dynamicTools`, which the current runtime needs for `linear_graphql`.
+
+- Observation: the SDK’s private notification queue is sufficient for the migration adapter even
+  though the package does not yet expose a public notification iterator.
+  Evidence: `CodexClient._notifications` receives raw server notifications after the receiver loop
+  handles request/response correlation, which lets Symphony preserve its existing streaming event
+  normalization with a small repository-owned adapter.
+
+- Observation: the repository still needs a narrow legacy handshake entry point for tests that
+  intentionally exercise malformed JSONL and oversized-line behavior.
+  Evidence: the fake app-server fixtures in `apps/api/tests/unit/agent_runner/` only implement the
+  handwritten JSONL loop, so SDK-first runtime tests were added separately while legacy transport
+  remains available as an internal helper.
 
 ## Decision Log
 
@@ -118,6 +138,13 @@ contains a narrow `start_sdk_app_server_session(...)` path that uses the release
 and `session_id` shape as the handwritten client. The main lesson from this milestone is that the
 SDK is viable for the handshake path, but the full migration still depends on introducing an
 adapter-owned notification surface for `runner.py`.
+
+Milestone 2 is now complete. The default `start_app_server_session(...)` path is SDK-backed, and
+the rest of Symphony continues to talk to a repository-owned `AppServerSession` abstraction rather
+than to raw SDK objects. That adapter now owns exactly the Symphony-specific pieces needed for full
+streamed turns: notification reads, server-request responses, continuation-turn startup, stderr
+diagnostics, and transport-error normalization. The main remaining work for Milestone 3 is to
+delete or isolate the handwritten JSONL code that now survives primarily for tests.
 
 ## Context and Orientation
 

@@ -4,9 +4,21 @@ import asyncio
 import json
 from pathlib import Path
 
-from symphony.agent_runner import AgentRuntimeEvent, start_next_turn, stream_turn
+import pytest
+from symphony.agent_runner import (
+    AgentRuntimeEvent,
+    AppServerSession,
+    start_next_turn,
+    stream_turn,
+)
+from symphony.common.types import ServiceInfo
 
-from .helpers import collect_events, start_fake_app_server_session
+from .helpers import (
+    FakeSdkClient,
+    collect_events,
+    install_fake_sdk_bindings,
+    start_fake_app_server_session,
+)
 
 
 def test_stream_turn_completes_and_emits_runtime_events(tmp_path: Path) -> None:
@@ -446,3 +458,143 @@ def test_stream_turn_fails_when_approval_requires_operator(tmp_path: Path) -> No
         assert [event.event for event in events] == ["turn_ended_with_error"]
 
     asyncio.run(run_test())
+
+
+def test_stream_turn_auto_approves_sdk_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_client = FakeSdkClient(
+        request_handler=lambda method, params, timeout: (
+            {"thread": {"id": "thr_sdk"}}
+            if method == "thread/start"
+            else {"turn": {"id": "turn_1"}}
+        )
+    )
+    install_fake_sdk_bindings(monkeypatch, fake_client)
+
+    async def run_test() -> None:
+        events: list[AgentRuntimeEvent] = []
+        session = await _start_sdk_session(tmp_path)
+        try:
+            fake_client._notifications.put_nowait(
+                {"id": "approval_1", "method": "approval/request", "params": {"kind": "command"}}
+            )
+            fake_client._notifications.put_nowait(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {"id": "turn_1"},
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    },
+                }
+            )
+            result = await stream_turn(
+                session,
+                approval_policy="never",
+                turn_timeout_ms=1_000,
+                stall_timeout_ms=1_000,
+                on_event=lambda event: collect_events(events, event),
+            )
+        finally:
+            await session.aclose()
+
+        assert result.outcome == "completed"
+        assert [event.event for event in events] == [
+            "approval_auto_approved",
+            "turn_completed",
+        ]
+
+    asyncio.run(run_test())
+
+    assert fake_client.sent_messages == [{"id": "approval_1", "result": {"approved": True}}]
+
+
+def test_stream_turn_executes_sdk_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_client = FakeSdkClient(
+        request_handler=lambda method, params, timeout: (
+            {"thread": {"id": "thr_sdk"}}
+            if method == "thread/start"
+            else {"turn": {"id": "turn_1"}}
+        )
+    )
+    install_fake_sdk_bindings(monkeypatch, fake_client)
+
+    async def run_test() -> None:
+        events: list[AgentRuntimeEvent] = []
+        session = await _start_sdk_session(tmp_path)
+        try:
+            fake_client._notifications.put_nowait(
+                {
+                    "id": "tool_1",
+                    "method": "item/tool/call",
+                    "params": {
+                        "name": "linear_graphql",
+                        "arguments": {"query": "query Viewer { viewer { id } }"},
+                    },
+                }
+            )
+            fake_client._notifications.put_nowait(
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "turn": {"id": "turn_1"},
+                        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    },
+                }
+            )
+            result = await stream_turn(
+                session,
+                approval_policy="never",
+                turn_timeout_ms=1_000,
+                stall_timeout_ms=1_000,
+                tool_executor=lambda tool, arguments: {
+                    "success": True,
+                    "output": json.dumps({"tool": tool, "arguments": arguments}),
+                },
+                on_event=lambda event: collect_events(events, event),
+            )
+        finally:
+            await session.aclose()
+
+        assert result.outcome == "completed"
+        assert [event.event for event in events] == [
+            "tool_call_completed",
+            "turn_completed",
+        ]
+
+    asyncio.run(run_test())
+
+    first_result = fake_client.sent_messages[0]["result"]
+    assert isinstance(first_result, dict)
+    content_items = first_result["contentItems"]
+    assert isinstance(content_items, list)
+    assert fake_client.sent_messages[0]["id"] == "tool_1"
+    assert first_result["success"] is True
+    assert content_items == [
+        {
+            "type": "inputText",
+            "text": first_result["output"],
+        }
+    ]
+
+
+async def _start_sdk_session(tmp_path: Path) -> AppServerSession:
+    from symphony.agent_runner import start_app_server_session
+
+    return await start_app_server_session(
+        command="codex app-server",
+        workspace_path=tmp_path,
+        prompt_text="Summarize this repo.",
+        title="SYM-123: Handshake",
+        service_info=ServiceInfo(name="symphony", version="0.1.0"),
+        approval_policy="never",
+        thread_sandbox="workspace-write",
+        turn_sandbox_policy={"type": "workspace-write"},
+        read_timeout_ms=1_000,
+        capabilities={},
+        model="gpt-5.1-codex",
+    )

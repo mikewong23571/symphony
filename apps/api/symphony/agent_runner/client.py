@@ -63,6 +63,15 @@ class AppServerSession:
     _pending_messages: deque[Mapping[str, Any]] = field(default_factory=deque, repr=False)
     _diagnostic_context: AppServerDiagnosticContext | None = field(default=None, repr=False)
     _close_callback: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+    _read_message_callback: Callable[[float | None], Awaitable[Mapping[str, Any]]] | None = field(
+        default=None, repr=False
+    )
+    _send_message_callback: Callable[[Mapping[str, object]], Awaitable[None]] | None = field(
+        default=None, repr=False
+    )
+    _start_turn_callback: (
+        Callable[[str, str, str, Mapping[str, Any], Path, int], Awaitable[str]] | None
+    ) = field(default=None, repr=False)
 
     async def aclose(self) -> None:
         if self._close_callback is not None:
@@ -81,7 +90,7 @@ class AppServerSession:
             await self._stderr_task
 
 
-async def start_app_server_session(
+async def _start_legacy_app_server_session(
     *,
     command: str,
     workspace_path: Path,
@@ -232,6 +241,41 @@ async def start_app_server_session(
     )
 
 
+async def start_app_server_session(
+    *,
+    command: str,
+    workspace_path: Path,
+    prompt_text: str,
+    title: str,
+    service_info: ServiceInfo,
+    approval_policy: str,
+    thread_sandbox: str,
+    turn_sandbox_policy: Mapping[str, Any],
+    read_timeout_ms: int,
+    capabilities: Mapping[str, Any] | None = None,
+    dynamic_tools: Sequence[Mapping[str, Any]] | None = None,
+    model: str | None = None,
+    stderr_callback: (
+        Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
+    ) = None,
+) -> AppServerSession:
+    return await start_sdk_app_server_session(
+        command=command,
+        workspace_path=workspace_path,
+        prompt_text=prompt_text,
+        title=title,
+        service_info=service_info,
+        approval_policy=approval_policy,
+        thread_sandbox=thread_sandbox,
+        turn_sandbox_policy=turn_sandbox_policy,
+        read_timeout_ms=read_timeout_ms,
+        capabilities=capabilities,
+        dynamic_tools=dynamic_tools,
+        model=model,
+        stderr_callback=stderr_callback,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _SdkBindings:
     client_class: Any
@@ -273,6 +317,9 @@ async def start_sdk_app_server_session(
     capabilities: Mapping[str, Any] | None = None,
     dynamic_tools: Sequence[Mapping[str, Any]] | None = None,
     model: str | None = None,
+    stderr_callback: (
+        Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
+    ) = None,
 ) -> AppServerSession:
     bindings = _load_sdk_bindings()
     workspace_cwd = workspace_path.resolve()
@@ -284,9 +331,27 @@ async def start_sdk_app_server_session(
         request_timeout=timeout_seconds,
         inactivity_timeout=None,
     )
+    stderr_lines: list[str] = []
+    stderr_task: asyncio.Task[None] | None = None
+    diagnostic_context: AppServerDiagnosticContext | None = None
 
     try:
         await client.start()
+        process = _extract_sdk_process(client)
+        diagnostic_context = AppServerDiagnosticContext(
+            session_id=None,
+            thread_id=None,
+            turn_id=None,
+            codex_app_server_pid=process.pid,
+        )
+        stderr_task = asyncio.create_task(
+            _drain_stderr(
+                process,
+                stderr_lines,
+                stderr_callback=stderr_callback,
+                diagnostic_context=diagnostic_context,
+            )
+        )
         await client.initialize(
             {
                 "clientInfo": {
@@ -316,6 +381,7 @@ async def start_sdk_app_server_session(
         if not isinstance(thread_result, Mapping):
             raise AppServerProtocolError("App-server response id 2 is missing a result object.")
         thread_id = _extract_required_id(thread_result, outer_key="thread")
+        diagnostic_context.thread_id = thread_id
 
         turn_result = await client.request(
             "turn/start",
@@ -332,32 +398,66 @@ async def start_sdk_app_server_session(
         if not isinstance(turn_result, Mapping):
             raise AppServerProtocolError("App-server response id 3 is missing a result object.")
         turn_id = _extract_required_id(turn_result, outer_key="turn")
+        diagnostic_context.turn_id = turn_id
+        diagnostic_context.session_id = f"{thread_id}-{turn_id}"
     except bindings.timeout_error_class as exc:
         with suppress(Exception):
             await client.close()
+        if stderr_task is not None:
+            await stderr_task
         raise AppServerResponseTimeoutError(
             "Timed out waiting for app-server handshake response."
         ) from exc
     except bindings.protocol_error_class as exc:
         with suppress(Exception):
             await client.close()
+        if stderr_task is not None:
+            await stderr_task
         raise AppServerProtocolError(str(exc)) from exc
     except bindings.transport_error_class as exc:
         with suppress(Exception):
             await client.close()
+        if stderr_task is not None:
+            await stderr_task
         raise AppServerStartupError("Could not start the Codex app-server subprocess.") from exc
     except Exception:
         with suppress(Exception):
             await client.close()
+        if stderr_task is not None:
+            await stderr_task
         raise
 
     return AppServerSession(
-        process=_extract_sdk_process(client),
+        process=process,
         thread_id=thread_id,
         turn_id=turn_id,
         session_id=f"{thread_id}-{turn_id}",
         next_request_id=FIRST_RUNTIME_REQUEST_ID,
-        _close_callback=client.close,
+        stderr_lines=stderr_lines,
+        _stderr_task=stderr_task,
+        _diagnostic_context=diagnostic_context,
+        _close_callback=lambda: _close_sdk_session(client, stderr_task),
+        _read_message_callback=lambda timeout_seconds: _read_sdk_notification(
+            client,
+            timeout_seconds=timeout_seconds,
+        ),
+        _send_message_callback=lambda message: _send_sdk_message(client, message),
+        _start_turn_callback=lambda next_prompt_text,
+        next_title,
+        next_approval_policy,
+        next_sandbox_policy,
+        next_cwd,
+        next_read_timeout_ms: _start_sdk_next_turn(
+            client,
+            thread_id=thread_id,
+            prompt_text=next_prompt_text,
+            title=next_title,
+            approval_policy=next_approval_policy,
+            sandbox_policy=next_sandbox_policy,
+            cwd=next_cwd,
+            read_timeout_ms=next_read_timeout_ms,
+            bindings=bindings,
+        ),
     )
 
 
@@ -365,6 +465,9 @@ async def send_protocol_message(
     session: AppServerSession,
     message: Mapping[str, object],
 ) -> None:
+    if session._send_message_callback is not None:
+        await session._send_message_callback(message)
+        return
     await _send_message(session.process, message)
 
 
@@ -378,6 +481,22 @@ async def start_next_turn(
     cwd: Path,
     read_timeout_ms: int,
 ) -> str:
+    if session._start_turn_callback is not None:
+        turn_id = await session._start_turn_callback(
+            prompt_text,
+            title,
+            approval_policy,
+            sandbox_policy,
+            cwd,
+            read_timeout_ms,
+        )
+        session.turn_id = turn_id
+        session.session_id = f"{session.thread_id}-{turn_id}"
+        if session._diagnostic_context is not None:
+            session._diagnostic_context.turn_id = turn_id
+            session._diagnostic_context.session_id = session.session_id
+        return turn_id
+
     request_id = session.next_request_id
     session.next_request_id += 1
 
@@ -416,6 +535,12 @@ async def read_protocol_message(
     *,
     timeout_seconds: float | None = None,
 ) -> Mapping[str, Any]:
+    if session._read_message_callback is not None:
+        message = await session._read_message_callback(timeout_seconds)
+        if message.get("method") == "__transport_error__":
+            raise AppServerProtocolError(_extract_transport_error_message(message))
+        return message
+
     if session._pending_messages:
         return session._pending_messages.popleft()
 
@@ -572,6 +697,98 @@ def _extract_sdk_process(client: Any) -> Any:
     if process is None or not hasattr(process, "pid") or not hasattr(process, "returncode"):
         raise AppServerStartupError("SDK-backed app-server transport did not expose a subprocess.")
     return process
+
+
+async def _close_sdk_session(client: Any, stderr_task: asyncio.Task[None] | None) -> None:
+    await client.close()
+    if stderr_task is not None:
+        await stderr_task
+
+
+async def _read_sdk_notification(
+    client: Any,
+    *,
+    timeout_seconds: float | None,
+) -> Mapping[str, Any]:
+    notifications = getattr(client, "_notifications", None)
+    if not isinstance(notifications, asyncio.Queue):
+        raise AppServerProtocolError("SDK-backed app-server client did not expose notifications.")
+
+    if timeout_seconds is None:
+        message = await notifications.get()
+    else:
+        message = await asyncio.wait_for(notifications.get(), timeout=timeout_seconds)
+
+    if not isinstance(message, Mapping):
+        raise AppServerProtocolError("App-server emitted a non-object notification.")
+    return message
+
+
+async def _send_sdk_message(client: Any, message: Mapping[str, object]) -> None:
+    transport = getattr(client, "_transport", None)
+    send = getattr(transport, "send", None)
+    send_lock = getattr(client, "_send_lock", None)
+    if not callable(send):
+        raise AppServerProtocolError("SDK-backed app-server transport did not expose send().")
+
+    payload = dict(message)
+    if isinstance(send_lock, asyncio.Lock):
+        async with send_lock:
+            await send(payload)
+        return
+
+    await send(payload)
+
+
+async def _start_sdk_next_turn(
+    client: Any,
+    *,
+    thread_id: str,
+    prompt_text: str,
+    title: str,
+    approval_policy: str,
+    sandbox_policy: Mapping[str, Any],
+    cwd: Path,
+    read_timeout_ms: int,
+    bindings: _SdkBindings,
+) -> str:
+    timeout_seconds = _milliseconds_to_seconds(read_timeout_ms)
+    try:
+        turn_result = await client.request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": prompt_text}],
+                "cwd": str(cwd.resolve()),
+                "title": title,
+                "approvalPolicy": approval_policy,
+                "sandboxPolicy": _normalize_sandbox_policy(sandbox_policy),
+            },
+            timeout=timeout_seconds,
+        )
+    except bindings.timeout_error_class as exc:
+        raise AppServerResponseTimeoutError(
+            "Timed out waiting for app-server handshake response."
+        ) from exc
+    except bindings.protocol_error_class as exc:
+        raise AppServerProtocolError(str(exc)) from exc
+    except bindings.transport_error_class as exc:
+        raise AppServerProtocolError(
+            "App-server transport failed while starting the next turn."
+        ) from exc
+
+    if not isinstance(turn_result, Mapping):
+        raise AppServerProtocolError("App-server response id 3 is missing a result object.")
+    return _extract_required_id(turn_result, outer_key="turn")
+
+
+def _extract_transport_error_message(message: Mapping[str, Any]) -> str:
+    params = message.get("params")
+    if isinstance(params, Mapping):
+        value = params.get("message")
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return "App-server transport failed while receiving notifications."
 
 
 def _format_response_error(expected_id: int, error: object) -> str:

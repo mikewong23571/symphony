@@ -4,7 +4,6 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 import symphony.agent_runner.client as client_module
@@ -18,7 +17,13 @@ from symphony.agent_runner import (
 )
 from symphony.common.types import ServiceInfo
 
-from .helpers import FAKE_APP_SERVER_PATH, start_fake_app_server_session
+from .helpers import (
+    FAKE_APP_SERVER_PATH,
+    FakeSdkClient,
+    FakeSdkProtocolError,
+    install_fake_sdk_bindings,
+    start_fake_app_server_session,
+)
 
 
 def test_start_app_server_session_completes_handshake_and_returns_ids(tmp_path: Path) -> None:
@@ -111,16 +116,7 @@ def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
             {"turn": {"id": "turn_sdk"}},
         ]
     )
-    monkeypatch.setattr(
-        client_module,
-        "_load_sdk_bindings",
-        lambda: client_module._SdkBindings(
-            client_class=FakeSdkClientFactory(fake_client),
-            protocol_error_class=FakeSdkProtocolError,
-            timeout_error_class=FakeSdkTimeoutError,
-            transport_error_class=FakeSdkTransportError,
-        ),
-    )
+    install_fake_sdk_bindings(monkeypatch, fake_client)
 
     async def run_test() -> None:
         session = await client_module.start_sdk_app_server_session(
@@ -211,16 +207,7 @@ def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
     fake_client = FakeSdkClient(
         responses=[FakeSdkProtocolError("thread/start failed: bad request")]
     )
-    monkeypatch.setattr(
-        client_module,
-        "_load_sdk_bindings",
-        lambda: client_module._SdkBindings(
-            client_class=FakeSdkClientFactory(fake_client),
-            protocol_error_class=FakeSdkProtocolError,
-            timeout_error_class=FakeSdkTimeoutError,
-            transport_error_class=FakeSdkTransportError,
-        ),
-    )
+    install_fake_sdk_bindings(monkeypatch, fake_client)
 
     with pytest.raises(AppServerProtocolError, match="thread/start failed: bad request"):
         asyncio.run(
@@ -238,6 +225,107 @@ def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
         )
 
     assert fake_client.closed is True
+
+
+def test_start_app_server_session_defaults_to_sdk_runtime_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    turn_counter = 0
+
+    def request_handler(method: str, params: dict[str, object], timeout: float | None) -> object:
+        nonlocal turn_counter
+        assert timeout == 1.0
+        if method == "thread/start":
+            return {"thread": {"id": "thr_sdk"}}
+        if method == "turn/start":
+            turn_counter += 1
+            if turn_counter == 1:
+                return {"turn": {"id": "turn_1"}}
+            fake_client._notifications.put_nowait(
+                {"id": "approval_2", "method": "approval/request", "params": {"kind": "command"}}
+            )
+            return {"turn": {"id": "turn_2"}}
+        raise AssertionError(f"Unexpected method: {method}")
+
+    fake_client = FakeSdkClient(request_handler=request_handler)
+    install_fake_sdk_bindings(monkeypatch, fake_client)
+
+    async def run_test() -> None:
+        session = await start_app_server_session(
+            command="codex app-server",
+            workspace_path=tmp_path,
+            prompt_text="Summarize this repo.",
+            title="SYM-123: SDK Handshake",
+            service_info=ServiceInfo(name="symphony", version="0.1.0"),
+            approval_policy="never",
+            thread_sandbox="workspace-write",
+            turn_sandbox_policy={"type": "workspace-write"},
+            read_timeout_ms=1_000,
+        )
+        try:
+            fake_client._notifications.put_nowait(
+                {"method": "item/started", "params": {"item": {"id": "itm_1"}}}
+            )
+            message = await read_protocol_message(session)
+            assert message["method"] == "item/started"
+
+            turn_id = await start_next_turn(
+                session,
+                prompt_text="Continue the work.",
+                title="SYM-123: Turn 2",
+                approval_policy="never",
+                sandbox_policy={"type": "workspace-write"},
+                cwd=tmp_path,
+                read_timeout_ms=1_000,
+            )
+            assert turn_id == "turn_2"
+            assert session.session_id == "thr_sdk-turn_2"
+
+            approval_request = await read_protocol_message(session)
+            assert approval_request["id"] == "approval_2"
+        finally:
+            await session.aclose()
+
+    asyncio.run(run_test())
+
+    assert fake_client.started is True
+    assert fake_client.closed is True
+    assert fake_client.request_calls == [
+        (
+            "thread/start",
+            {
+                "cwd": str(tmp_path.resolve()),
+                "approvalPolicy": "never",
+                "sandbox": "workspace-write",
+            },
+            1.0,
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": "thr_sdk",
+                "input": [{"type": "text", "text": "Summarize this repo."}],
+                "cwd": str(tmp_path.resolve()),
+                "title": "SYM-123: SDK Handshake",
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "workspaceWrite"},
+            },
+            1.0,
+        ),
+        (
+            "turn/start",
+            {
+                "threadId": "thr_sdk",
+                "input": [{"type": "text", "text": "Continue the work."}],
+                "cwd": str(tmp_path.resolve()),
+                "title": "SYM-123: Turn 2",
+                "approvalPolicy": "never",
+                "sandboxPolicy": {"type": "workspaceWrite"},
+            },
+            1.0,
+        ),
+    ]
 
 
 @pytest.mark.parametrize("mode", ["missing_thread_id", "missing_turn_id"])
@@ -304,7 +392,7 @@ def test_start_app_server_session_forwards_stderr_lines_to_callback(tmp_path: Pa
     async def run_test() -> None:
         diagnostics: list[dict[str, object | None]] = []
 
-        session = await start_app_server_session(
+        session = await client_module._start_legacy_app_server_session(
             command=command,
             workspace_path=tmp_path,
             prompt_text="Summarize this repo.",
@@ -403,64 +491,3 @@ async def run_handshake(
         mode=mode,
         read_timeout_ms=read_timeout_ms,
     )
-
-
-class FakeSdkProtocolError(Exception):
-    pass
-
-
-class FakeSdkTimeoutError(Exception):
-    pass
-
-
-class FakeSdkTransportError(Exception):
-    pass
-
-
-class FakeSdkClientFactory:
-    def __init__(self, client: FakeSdkClient) -> None:
-        self._client = client
-
-    def connect_stdio(self, **kwargs: object) -> FakeSdkClient:
-        self._client.connect_kwargs = dict(kwargs)
-        return self._client
-
-
-class FakeSdkClient:
-    def __init__(self, responses: list[object]) -> None:
-        self.responses = list(responses)
-        self.started = False
-        self.closed = False
-        self.initialize_calls: list[tuple[dict[str, object], float | None]] = []
-        self.request_calls: list[tuple[str, dict[str, object], float | None]] = []
-        self.connect_kwargs: dict[str, object] | None = None
-        self._transport = SimpleNamespace(_proc=SimpleNamespace(pid=4321, returncode=None))
-
-    async def start(self) -> FakeSdkClient:
-        self.started = True
-        return self
-
-    async def initialize(
-        self,
-        params: dict[str, object],
-        *,
-        timeout: float | None = None,
-    ) -> object:
-        self.initialize_calls.append((params, timeout))
-        return {"serverInfo": {"name": "fake"}}
-
-    async def request(
-        self,
-        method: str,
-        params: dict[str, object],
-        *,
-        timeout: float | None = None,
-    ) -> object:
-        self.request_calls.append((method, params, timeout))
-        response = self.responses.pop(0)
-        if isinstance(response, FakeSdkProtocolError | FakeSdkTimeoutError | FakeSdkTransportError):
-            raise response
-        return response
-
-    async def close(self) -> None:
-        self.closed = True
