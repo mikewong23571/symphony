@@ -39,7 +39,7 @@ package-dir = { "" = "apps/api" }
 
 [tool.setuptools.packages.find]
 where = ["apps/api"]
-include = ["config*", "symphony*"]
+include = ["config*", "symphony*", "runtime*", "lib*"]
 
 [tool.ruff]
 line-length = 100

@@ -46,24 +46,32 @@
 ### Critical Entry Points
 
 - `docs/SPEC.md`: product and behavior source of truth
-- `docs/EXEC_PLAN.md`: implementation order and milestones
+- `docs/EXEC_PLAN.md`: implementation order and milestones; feature-specific plans live as `docs/EXEC_PLAN_<name>.md`
+- `docs/ROADMAP.md`: product roadmap
+- `docs/SPEC_GAPS.md`: known gaps between spec and implementation
+- `docs/ADR/`: architecture decision records
 - `Makefile`: unified local commands
 - `.pre-commit-config.yaml`: commit-time quality gates
 
 ### Backend
 
 - `apps/api/manage.py`: Django entrypoint
-- `apps/api/config/settings/base.py`: main Django/DRF settings
-- `apps/api/config/urls.py`: current HTTP routes
+- `apps/api/config/wsgi.py`: WSGI application (used by the embedded runtime HTTP server)
+- `apps/api/config/settings/base.py`: main Django/DRF settings; `local.py`, `test.py`, `prod.py` are environment overrides
+- `apps/api/config/urls.py`: HTTP route registration
 - `apps/api/symphony/apps.py`: root app registration
-- `apps/api/symphony/management/commands/run_orchestrator.py`: orchestrator CLI entry
-- `apps/api/symphony/workflow/`: workflow parsing and typed config target
-- `apps/api/symphony/tracker/`: tracker adapter target
-- `apps/api/symphony/workspace/`: workspace lifecycle target
-- `apps/api/symphony/agent_runner/`: Codex app-server integration target
-- `apps/api/symphony/orchestrator/`: runtime state machine target
-- `apps/api/symphony/observability/`: logging and snapshot target
-- `apps/api/tests/`: backend tests
+- `apps/api/symphony/cli.py`: package CLI entry point (`run_orchestrator_main`)
+- `apps/api/symphony/api/views.py`: HTTP API views — runtime dashboard, state, SSE events, tracker mutations
+- `apps/api/symphony/api/server.py`: embedded `RuntimeHTTPServer` used by the orchestrator to serve agent callbacks
+- `apps/api/symphony/management/commands/run_orchestrator.py`: `run_orchestrator` management command
+- `apps/api/runtime/agent_runner/`: Codex SDK integration — `client.py`, `runner.py`, `harness.py`, `events.py`, `dynamic_tool.py`, `prompting.py`
+- `apps/api/runtime/orchestrator/`: runtime state machine — `core.py`, `recovery.py`
+- `apps/api/runtime/workspace/`: workspace lifecycle — `manager.py`, `hooks.py`
+- `apps/api/runtime/observability/`: snapshots and SSE events — `snapshots.py`, `runtime.py`, `events.py`
+- `apps/api/lib/workflow/`: workflow definition loading (`loader.py`), typed config (`config.py`), runtime helpers (`runtime.py`)
+- `apps/api/lib/tracker/`: tracker adapters — `interfaces.py` (abstract), `linear.py`/`plane.py` (impls), `write_service.py`/`write_contract.py` (mutation layer)
+- `apps/api/lib/common/`: shared domain logic — `types.py` (e.g. `ServiceInfo`), `logging.py` (`log_event`)
+- `apps/api/tests/unit/`: backend unit tests, mirroring the module structure above
 
 ### Frontend
 
@@ -74,9 +82,9 @@
 - `apps/web/src/main.ts`: Angular app bootstrap
 - `apps/web/src/styles/tokens.css`: design token source of truth
 - `apps/web/src/styles/globals.css`: global styles
-- `apps/web/src/app/features/`: feature area root
-- `apps/web/src/app/shared/`: shared UI and helpers
-- `apps/web/src/app/generated/`: generated API client target
+- `apps/web/src/app/features/`: feature areas — `dashboard/`, `issues/`, `runs/`
+- `apps/web/src/app/shared/`: shared UI and helpers — `api/`, `lib/`, `ui/`
+- `apps/web/src/app/generated/`: generated API client
 
 ## Implementation Notes
 

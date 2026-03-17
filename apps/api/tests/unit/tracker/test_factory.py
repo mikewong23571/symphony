@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import pytest
-from symphony.tracker import (
+from lib.tracker import (
     LinearTrackerClient,
     PlaneTrackerClient,
     TrackerRequestFailedError,
     build_tracker_mutation_backend,
     build_tracker_read_client,
 )
-from symphony.workflow import MissingTrackerWorkspaceSlugError
-from symphony.workflow.config import ServiceConfig, build_service_config
-from symphony.workflow.loader import WorkflowDefinition
+from lib.workflow import MissingTrackerWorkspaceSlugError
+from lib.workflow.config import ServiceConfig, build_service_config
+from lib.workflow.loader import WorkflowDefinition
 
 
 def make_service_config() -> ServiceConfig:

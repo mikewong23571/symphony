@@ -15,16 +15,7 @@ from django.http import (
     StreamingHttpResponse,
 )
 from django.views.decorators.csrf import csrf_exempt
-
-from symphony.observability.events import wait_for_runtime_invalidation
-from symphony.observability.runtime import (
-    RuntimeIssueNotFoundError,
-    RuntimeSnapshotUnavailableError,
-    get_runtime_issue_snapshot,
-    get_runtime_snapshot,
-    queue_runtime_refresh_request,
-)
-from symphony.tracker.write_contract import (
+from lib.tracker.write_contract import (
     TrackerCommentRequest,
     TrackerIssueNotFoundError,
     TrackerMutationError,
@@ -32,16 +23,24 @@ from symphony.tracker.write_contract import (
     TrackerTransitionRequest,
     TrackerValidationError,
 )
-from symphony.tracker.write_service import (
+from lib.tracker.write_service import (
     TrackerMutationService,
     build_tracker_mutation_service,
 )
-from symphony.workflow import (
+from lib.workflow import (
     WorkflowConfigError,
     WorkflowError,
     build_service_config,
     load_workflow_definition,
     validate_dispatch_config,
+)
+from runtime.observability.events import wait_for_runtime_invalidation
+from runtime.observability.runtime import (
+    RuntimeIssueNotFoundError,
+    RuntimeSnapshotUnavailableError,
+    get_runtime_issue_snapshot,
+    get_runtime_snapshot,
+    queue_runtime_refresh_request,
 )
 
 ALLOWED_DASHBOARD_METHODS = "GET, HEAD"

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from symphony.common.types import ServiceInfo
+from lib.common.types import ServiceInfo
 
 _LEGACY_SANDBOX_POLICY_TYPES = {
     "danger-full-access": "dangerFullAccess",
@@ -82,39 +82,85 @@ class AppServerSession:
             await self._stderr_task
 
 
-async def start_app_server_session(
-    *,
-    command: str,
-    workspace_path: Path,
-    prompt_text: str,
-    title: str,
-    service_info: ServiceInfo,
-    approval_policy: str,
-    thread_sandbox: str,
-    turn_sandbox_policy: Mapping[str, Any],
-    read_timeout_ms: int,
-    capabilities: Mapping[str, Any] | None = None,
-    dynamic_tools: Sequence[Mapping[str, Any]] | None = None,
-    model: str | None = None,
-    stderr_callback: (
-        Callable[[str, AppServerDiagnosticContext], Awaitable[None] | None] | None
-    ) = None,
-) -> AppServerSession:
-    return await start_sdk_app_server_session(
-        command=command,
-        workspace_path=workspace_path,
-        prompt_text=prompt_text,
-        title=title,
-        service_info=service_info,
-        approval_policy=approval_policy,
-        thread_sandbox=thread_sandbox,
-        turn_sandbox_policy=turn_sandbox_policy,
-        read_timeout_ms=read_timeout_ms,
-        capabilities=capabilities,
-        dynamic_tools=dynamic_tools,
-        model=model,
-        stderr_callback=stderr_callback,
-    )
+class _StderrCapturingTransport:
+    """JSON-RPC stdio transport that captures the subprocess stderr pipe.
+
+    The SDK's built-in StdioTransport discards stderr via DEVNULL. This
+    implementation keeps identical send/recv/close semantics but launches
+    the subprocess with stderr=PIPE so Symphony can drain and forward stderr
+    lines through its diagnostic callback.
+    """
+
+    def __init__(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        connect_timeout: float = 30.0,
+    ) -> None:
+        self._command = command
+        self._cwd = cwd
+        self._connect_timeout = connect_timeout
+        self._proc: asyncio.subprocess.Process | None = None
+
+    _STREAM_LIMIT = 8 * 1024 * 1024  # 8 MB – accommodates large tool output payloads
+
+    async def connect(self) -> None:
+        if self._proc is not None:
+            return
+        self._proc = await asyncio.wait_for(
+            asyncio.create_subprocess_exec(
+                *self._command,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=self._cwd,
+                limit=self._STREAM_LIMIT,
+            ),
+            timeout=self._connect_timeout,
+        )
+
+    async def send(self, payload: Any) -> None:
+        import json
+
+        if self._proc is None or self._proc.stdin is None:
+            raise RuntimeError("transport not connected")
+        line = json.dumps(dict(payload), separators=(",", ":")) + "\n"
+        self._proc.stdin.write(line.encode("utf-8"))
+        await self._proc.stdin.drain()
+
+    async def recv(self) -> Any:
+        import json
+
+        from codex_app_server_sdk.errors import CodexTransportError
+
+        if self._proc is None or self._proc.stdout is None:
+            raise CodexTransportError("stdio transport is not connected")
+        try:
+            line = await self._proc.stdout.readline()
+        except Exception as exc:
+            raise CodexTransportError("failed reading from stdio transport") from exc
+        if not line:
+            raise CodexTransportError("stdio transport closed")
+        try:
+            return json.loads(line.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CodexTransportError("received invalid JSON from stdio transport") from exc
+
+    async def close(self) -> None:
+        if self._proc is None:
+            return
+        proc = self._proc
+        self._proc = None
+        if proc.stdin is not None:
+            proc.stdin.close()
+        if proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except TimeoutError:
+                proc.kill()
+                await proc.wait()
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,15 +182,35 @@ def _load_sdk_bindings() -> _SdkBindings:
     except ImportError as exc:  # pragma: no cover - exercised via real dependency resolution
         raise AppServerStartupError("The codex-app-server-sdk package is not installed.") from exc
 
+    class _SymphonyCodexClient(CodexClient):
+        """CodexClient variant that routes all server-initiated requests to _notifications.
+
+        The SDK's default receiver loop sends an error response for any server
+        request method it does not recognise (approval methods are the only ones
+        it handles natively). Symphony owns the approval, tool-call, and
+        user-input response logic, so we override _handle_server_request to
+        always return True – which tells the loop to put the request payload
+        into _notifications without auto-replying.
+        """
+
+        async def _handle_server_request(
+            self,
+            *,
+            request_id: Any,
+            method: Any,
+            payload: Any,
+        ) -> bool:
+            return True
+
     return _SdkBindings(
-        client_class=CodexClient,
+        client_class=_SymphonyCodexClient,
         protocol_error_class=CodexProtocolError,
         timeout_error_class=CodexTimeoutError,
         transport_error_class=CodexTransportError,
     )
 
 
-async def start_sdk_app_server_session(
+async def start_app_server_session(
     *,
     command: str,
     workspace_path: Path,
@@ -165,10 +231,13 @@ async def start_sdk_app_server_session(
     bindings = _load_sdk_bindings()
     workspace_cwd = workspace_path.resolve()
     timeout_seconds = _milliseconds_to_seconds(read_timeout_ms)
-    client = bindings.client_class.connect_stdio(
-        command=["bash", "-lc", command],
+    transport = _StderrCapturingTransport(
+        ["bash", "-lc", command],
         cwd=str(workspace_cwd),
         connect_timeout=timeout_seconds,
+    )
+    client = bindings.client_class(
+        transport,
         request_timeout=timeout_seconds,
         inactivity_timeout=None,
     )
@@ -199,7 +268,7 @@ async def start_sdk_app_server_session(
                     "name": service_info.name,
                     "version": service_info.version,
                 },
-                "capabilities": dict(capabilities or {}),
+                "capabilities": {"experimentalApi": True, **dict(capabilities or {})},
             },
             timeout=timeout_seconds,
         )

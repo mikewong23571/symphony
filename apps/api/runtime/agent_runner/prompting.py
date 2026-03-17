@@ -4,8 +4,7 @@ from dataclasses import asdict
 
 from jinja2 import Environment, StrictUndefined
 from jinja2.exceptions import TemplateAssertionError, TemplateError, TemplateSyntaxError
-
-from symphony.tracker.models import Issue
+from lib.tracker.models import Issue
 
 DEFAULT_FALLBACK_PROMPT = "You are working on an issue from the configured tracker."
 PROMPT_TEMPLATE_ENVIRONMENT = Environment(undefined=StrictUndefined, autoescape=False)

@@ -46,7 +46,7 @@ def send_turn_completed(turn_id: str, index: int = 1) -> None:
     )
 
 
-def perform_handshake() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+def perform_handshake() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     initialize = read_message()
     if mode == "timeout_initialize":
         time.sleep(0.2)
@@ -54,7 +54,6 @@ def perform_handshake() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any],
 
     send({"id": initialize["id"], "result": {"serverInfo": {"name": "fake"}}})
 
-    initialized = read_message()
     if mode == "stderr":
         print("stderr noise", file=sys.stderr, flush=True)
 
@@ -88,7 +87,7 @@ def perform_handshake() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any],
         send({"method": "item/started", "params": {"item": {"id": "itm_1"}}})
 
     send({"id": turn_start["id"], "result": {"turn": {"id": "turn_1"}}})
-    return initialize, initialized, thread_start, turn_start
+    return initialize, thread_start, turn_start
 
 
 def read_followup_turn(expected_turn_number: int) -> dict[str, Any]:

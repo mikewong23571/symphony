@@ -7,9 +7,8 @@ from typing import Any
 
 import pytest
 from django.test import Client
-from symphony.api.views import _build_tracker_mutation_service
-from symphony.tracker import PlaneTransportResponse
-from symphony.tracker.write_contract import (
+from lib.tracker import PlaneTransportResponse
+from lib.tracker.write_contract import (
     TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
@@ -22,7 +21,8 @@ from symphony.tracker.write_contract import (
     TrackerTransitionResult,
     TrackerWorkflowState,
 )
-from symphony.tracker.write_service import TrackerMutationService
+from lib.tracker.write_service import TrackerMutationService
+from symphony.api.views import _build_tracker_mutation_service
 
 
 class FakeTrackerMutationService:
@@ -469,7 +469,7 @@ def test_tracker_pull_request_endpoint_uses_plane_workflow_backend_idempotently(
     )
 
     monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
     _build_tracker_mutation_service.cache_clear()
 
     payload = {
@@ -600,7 +600,7 @@ def test_tracker_pull_request_endpoint_updates_plane_link_title_on_replay(
     )
 
     monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
     _build_tracker_mutation_service.cache_clear()
 
     first_payload = {
@@ -698,7 +698,7 @@ def test_tracker_comment_endpoint_uses_plane_workflow_backend(
     )
 
     monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
     _build_tracker_mutation_service.cache_clear()
 
     try:
@@ -781,7 +781,7 @@ def test_tracker_transition_endpoint_uses_plane_workflow_backend(
     )
 
     monkeypatch.setenv("SYMPHONY_WORKFLOW_PATH", str(workflow_path))
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
     _build_tracker_mutation_service.cache_clear()
 
     try:

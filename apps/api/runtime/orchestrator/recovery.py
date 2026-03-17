@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from symphony.observability.snapshots import isoformat_utc, parse_snapshot_timestamp
+from runtime.observability.snapshots import isoformat_utc, parse_snapshot_timestamp
 
 
 class RecoveryStateError(RuntimeError):

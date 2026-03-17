@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from symphony.workflow import (
+from lib.workflow import (
     DEFAULT_ACTIVE_STATES,
     DEFAULT_CODEX_COMMAND,
     DEFAULT_HOOK_TIMEOUT_MS,

@@ -10,13 +10,17 @@ from typing import Any, cast
 
 import pytest
 from django.test import Client
-from symphony.agent_runner import AttemptResult
-from symphony.observability.events import (
+from lib.tracker import PlaneTrackerClient, PlaneTransportResponse
+from lib.tracker.models import Issue
+from lib.workflow.config import ServiceConfig, build_service_config
+from lib.workflow.loader import WorkflowDefinition
+from runtime.agent_runner import AttemptResult
+from runtime.observability.events import (
     clear_runtime_invalidations,
     publish_runtime_invalidation,
     wait_for_runtime_invalidation,
 )
-from symphony.observability.runtime import (
+from runtime.observability.runtime import (
     DEFAULT_RUNTIME_REFRESH_REQUEST_FILENAME,
     DEFAULT_RUNTIME_SNAPSHOT_FILENAME,
     RuntimeSnapshotUnavailableError,
@@ -29,11 +33,7 @@ from symphony.observability.runtime import (
     get_runtime_snapshot_path,
     publish_runtime_snapshot,
 )
-from symphony.orchestrator import Orchestrator
-from symphony.tracker import PlaneTrackerClient, PlaneTransportResponse
-from symphony.tracker.models import Issue
-from symphony.workflow.config import ServiceConfig, build_service_config
-from symphony.workflow.loader import WorkflowDefinition
+from runtime.orchestrator import Orchestrator
 
 
 class SilentTrackerClient:
@@ -287,7 +287,7 @@ def test_state_endpoint_reads_default_snapshot_path_across_processes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
-    monkeypatch.setattr("symphony.observability.runtime.os.getpid", lambda: 111)
+    monkeypatch.setattr("runtime.observability.runtime.os.getpid", lambda: 111)
 
     orchestrator = Orchestrator(
         config=build_config(tmp_path=tmp_path),
@@ -298,7 +298,7 @@ def test_state_endpoint_reads_default_snapshot_path_across_processes(
         try:
             await orchestrator.startup()
             clear_runtime_snapshot_provider(orchestrator)
-            monkeypatch.setattr("symphony.observability.runtime.os.getpid", lambda: 222)
+            monkeypatch.setattr("runtime.observability.runtime.os.getpid", lambda: 222)
 
             response = Client().get("/api/v1/state")
 
@@ -315,7 +315,7 @@ def test_state_and_issue_endpoints_read_plane_backed_snapshot_from_orchestrator(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("symphony.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
+    monkeypatch.setattr("runtime.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
     transport = RecordingPlaneTransport(
         responses=[
             PlaneTransportResponse(
@@ -341,7 +341,7 @@ def test_state_and_issue_endpoints_read_plane_backed_snapshot_from_orchestrator(
             ),
         ]
     )
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
 
     async def successful_worker_runner(**kwargs: object) -> AttemptResult:
         issue = cast(Issue, kwargs["issue"])
@@ -893,13 +893,13 @@ def test_runtime_snapshot_default_path_is_namespaced_per_installation(
 ) -> None:
     monkeypatch.delenv("SYMPHONY_RUNTIME_SNAPSHOT_PATH", raising=False)
     monkeypatch.setattr(
-        "symphony.observability.runtime._resolve_runtime_snapshot_scope_root",
+        "runtime.observability.runtime._resolve_runtime_snapshot_scope_root",
         lambda: Path("/tmp/checkout-a"),
     )
     path_a = get_runtime_snapshot_path()
 
     monkeypatch.setattr(
-        "symphony.observability.runtime._resolve_runtime_snapshot_scope_root",
+        "runtime.observability.runtime._resolve_runtime_snapshot_scope_root",
         lambda: Path("/tmp/checkout-b"),
     )
     path_b = get_runtime_snapshot_path()

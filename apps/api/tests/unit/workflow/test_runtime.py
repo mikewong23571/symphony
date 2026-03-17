@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TypedDict
 
 import pytest
-from symphony.workflow import (
+from lib.workflow import (
     MissingTrackerAPIBaseURLError,
     MissingTrackerAPIKeyError,
     MissingTrackerProjectIDError,

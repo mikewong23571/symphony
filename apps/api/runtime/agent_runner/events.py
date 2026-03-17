@@ -143,8 +143,16 @@ def _extract_named_usage_payload(
 
     for container_key in ("params", "result", "info"):
         nested = message.get(container_key)
-        if isinstance(nested, Mapping):
-            payload_candidates.append(nested)
+        if not isinstance(nested, Mapping):
+            continue
+        payload_candidates.append(nested)
+        # Also look into msg.info for Codex SDK event format (e.g., codex/event/token_count)
+        msg = nested.get("msg")
+        if isinstance(msg, Mapping):
+            payload_candidates.append(msg)
+            msg_info = msg.get("info")
+            if isinstance(msg_info, Mapping):
+                payload_candidates.append(msg_info)
 
     for candidate in payload_candidates:
         for key in keys:
@@ -161,8 +169,15 @@ def _extract_usage_mapping(candidate: Mapping[str, Any]) -> Mapping[str, Any] | 
 
     for key in ("usage", "tokenUsage"):
         nested = candidate.get(key)
-        if isinstance(nested, Mapping) and _contains_usage_keys(nested):
+        if not isinstance(nested, Mapping):
+            continue
+        if _contains_usage_keys(nested):
             return nested
+        # Some protocols nest usage one level deeper (e.g., Codex SDK's tokenUsage.last / .total)
+        for sub_key in ("total", "last"):
+            sub = nested.get(sub_key)
+            if isinstance(sub, Mapping) and _contains_usage_keys(sub):
+                return sub
 
     return None
 

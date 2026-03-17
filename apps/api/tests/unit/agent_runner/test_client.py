@@ -6,8 +6,8 @@ import sys
 from pathlib import Path
 
 import pytest
-import symphony.agent_runner.client as client_module
-from symphony.agent_runner import (
+from lib.common.types import ServiceInfo
+from runtime.agent_runner import (
     AppServerProtocolError,
     AppServerResponseTimeoutError,
     AppServerSession,
@@ -15,7 +15,6 @@ from symphony.agent_runner import (
     start_app_server_session,
     start_next_turn,
 )
-from symphony.common.types import ServiceInfo
 
 from .helpers import (
     FAKE_APP_SERVER_PATH,
@@ -24,7 +23,6 @@ from .helpers import (
     install_fake_sdk_bindings,
     start_fake_app_server_session,
 )
-from .legacy_transport import start_legacy_app_server_session
 
 
 def test_start_app_server_session_completes_handshake_and_returns_ids(tmp_path: Path) -> None:
@@ -47,14 +45,13 @@ def test_start_app_server_session_completes_handshake_and_returns_ids(tmp_path: 
     ]
     assert [message["method"] for message in logged_messages] == [
         "initialize",
-        "initialized",
         "thread/start",
         "turn/start",
     ]
-    assert logged_messages[2]["params"]["cwd"] == str(tmp_path.resolve())
-    assert logged_messages[3]["params"]["threadId"] == "thr_123"
-    assert logged_messages[3]["params"]["title"] == "SYM-123: Handshake"
-    assert logged_messages[3]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
+    assert logged_messages[1]["params"]["cwd"] == str(tmp_path.resolve())
+    assert logged_messages[2]["params"]["threadId"] == "thr_123"
+    assert logged_messages[2]["params"]["title"] == "SYM-123: Handshake"
+    assert logged_messages[2]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
 
 
 def test_start_app_server_session_ignores_interleaved_notifications(tmp_path: Path) -> None:
@@ -98,7 +95,7 @@ def test_start_app_server_session_advertises_dynamic_tools(tmp_path: Path) -> No
     logged_messages = [
         json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert logged_messages[2]["params"]["dynamicTools"] == [
+    assert logged_messages[1]["params"]["dynamicTools"] == [
         {
             "name": "linear_graphql",
             "description": "Execute Linear GraphQL.",
@@ -107,7 +104,7 @@ def test_start_app_server_session_advertises_dynamic_tools(tmp_path: Path) -> No
     ]
 
 
-def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
+def test_start_app_server_session_uses_sdk_handshake_and_returns_ids(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -120,7 +117,7 @@ def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
     install_fake_sdk_bindings(monkeypatch, fake_client)
 
     async def run_test() -> None:
-        session = await client_module.start_sdk_app_server_session(
+        session = await start_app_server_session(
             command="codex app-server",
             workspace_path=tmp_path,
             prompt_text="Summarize this repo.",
@@ -163,7 +160,7 @@ def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
         (
             {
                 "clientInfo": {"name": "symphony", "version": "0.1.0"},
-                "capabilities": {"roots": True},
+                "capabilities": {"experimentalApi": True, "roots": True},
             },
             1.5,
         )
@@ -201,7 +198,7 @@ def test_start_sdk_app_server_session_uses_sdk_handshake_and_returns_ids(
     ]
 
 
-def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
+def test_start_app_server_session_maps_sdk_protocol_errors(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -212,7 +209,7 @@ def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
 
     with pytest.raises(AppServerProtocolError, match="thread/start failed: bad request"):
         asyncio.run(
-            client_module.start_sdk_app_server_session(
+            start_app_server_session(
                 command="codex app-server",
                 workspace_path=tmp_path,
                 prompt_text="Summarize this repo.",
@@ -228,7 +225,7 @@ def test_start_sdk_app_server_session_maps_sdk_protocol_errors(
     assert fake_client.closed is True
 
 
-def test_start_app_server_session_defaults_to_sdk_runtime_path(
+def test_start_app_server_session_supports_notification_reads_and_continuation_turns(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -341,7 +338,7 @@ def test_start_app_server_session_rejects_missing_nested_ids(
 def test_start_app_server_session_surfaces_response_error_details(tmp_path: Path) -> None:
     with pytest.raises(
         AppServerProtocolError,
-        match=r"request id 3: code=-32600; sandbox policy rejected",
+        match=r"turn/start failed: sandbox policy rejected",
     ):
         asyncio.run(
             run_handshake(
@@ -353,7 +350,7 @@ def test_start_app_server_session_surfaces_response_error_details(tmp_path: Path
 
 
 def test_start_app_server_session_times_out_waiting_for_response(tmp_path: Path) -> None:
-    with pytest.raises(AppServerResponseTimeoutError, match="response id 1"):
+    with pytest.raises(AppServerResponseTimeoutError, match="app-server handshake response"):
         asyncio.run(
             run_handshake(
                 tmp_path,
@@ -373,11 +370,9 @@ def test_start_app_server_session_keeps_stderr_separate_from_stdout_protocol(
             log_path=tmp_path / "messages.jsonl",
             mode="stderr",
         )
-        try:
-            assert session.session_id == "thr_123-turn_1"
-            assert session.stderr_lines == ["stderr noise"]
-        finally:
-            await session.aclose()
+        await session.aclose()
+        assert session.session_id == "thr_123-turn_1"
+        assert session.stderr_lines == ["stderr noise"]
 
     asyncio.run(run_test())
 
@@ -393,7 +388,7 @@ def test_start_app_server_session_forwards_stderr_lines_to_callback(tmp_path: Pa
     async def run_test() -> None:
         diagnostics: list[dict[str, object | None]] = []
 
-        session = await start_legacy_app_server_session(
+        session = await start_app_server_session(
             command=command,
             workspace_path=tmp_path,
             prompt_text="Summarize this repo.",
@@ -413,19 +408,18 @@ def test_start_app_server_session_forwards_stderr_lines_to_callback(tmp_path: Pa
                 }
             ),
         )
-        try:
-            assert session.stderr_lines == ["stderr noise"]
-            assert diagnostics == [
-                {
-                    "line": "stderr noise",
-                    "session_id": None,
-                    "thread_id": None,
-                    "turn_id": None,
-                    "pid": session.process.pid,
-                }
-            ]
-        finally:
-            await session.aclose()
+        pid = session.process.pid
+        await session.aclose()
+        assert session.stderr_lines == ["stderr noise"]
+        assert diagnostics == [
+            {
+                "line": "stderr noise",
+                "session_id": None,
+                "thread_id": None,
+                "turn_id": None,
+                "pid": pid,
+            }
+        ]
 
     asyncio.run(run_test())
 
@@ -472,9 +466,9 @@ def test_start_next_turn_reuses_thread_and_updates_session_ids(tmp_path: Path) -
     logged_messages = [
         json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert logged_messages[4]["method"] == "turn/start"
-    assert logged_messages[4]["params"]["threadId"] == "thr_123"
-    assert logged_messages[4]["params"]["input"][0]["text"] == "Continue the work."
+    assert logged_messages[3]["method"] == "turn/start"
+    assert logged_messages[3]["params"]["threadId"] == "thr_123"
+    assert logged_messages[3]["params"]["input"][0]["text"] == "Continue the work."
 
 
 async def run_handshake(

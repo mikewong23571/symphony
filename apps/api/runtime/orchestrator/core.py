@@ -13,11 +13,14 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from symphony.agent_runner import AgentRuntimeEvent, AttemptResult, run_issue_attempt
-from symphony.common.types import ServiceInfo
-from symphony.observability.events import publish_runtime_invalidation
-from symphony.observability.logging import log_event
-from symphony.observability.runtime import (
+from lib.common.logging import log_event
+from lib.common.types import ServiceInfo
+from lib.tracker import Issue, TrackerReadClient, build_tracker_read_client
+from lib.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
+
+from runtime.agent_runner import AgentRuntimeEvent, AttemptResult, run_issue_attempt
+from runtime.observability.events import publish_runtime_invalidation
+from runtime.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     clear_runtime_snapshot_file,
     clear_runtime_snapshot_provider,
@@ -28,12 +31,12 @@ from symphony.observability.runtime import (
     publish_runtime_snapshot,
     register_runtime_snapshot_provider,
 )
-from symphony.observability.snapshots import (
+from runtime.observability.snapshots import (
     isoformat_utc,
     parse_snapshot_timestamp,
     refresh_runtime_snapshot,
 )
-from symphony.orchestrator.recovery import (
+from runtime.orchestrator.recovery import (
     PersistedSessionMetadata,
     RecoveryRetryState,
     RecoveryRunningState,
@@ -42,10 +45,8 @@ from symphony.orchestrator.recovery import (
     load_recovery_state,
     publish_recovery_state,
 )
-from symphony.tracker import Issue, TrackerReadClient, build_tracker_read_client
-from symphony.workflow import ServiceConfig, WorkflowRuntime, validate_dispatch_config
-from symphony.workspace import WorkspaceError, WorkspaceManager
-from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
+from runtime.workspace import WorkspaceError, WorkspaceManager
+from runtime.workspace.hooks import HookError, build_hook_start_error, run_hook
 
 CONTINUATION_RETRY_DELAY_MS = 1_000
 FAILURE_RETRY_BASE_DELAY_MS = 10_000

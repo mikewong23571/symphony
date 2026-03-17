@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from symphony.workspace.hooks import run_hook
+from runtime.workspace.hooks import run_hook
 
 
 class FakeProcess:

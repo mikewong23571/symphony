@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from typing import Protocol, TypeVar, cast
 from urllib.parse import urlparse
 
-from symphony.observability.logging import log_event
-from symphony.workflow import ServiceConfig
+from lib.common.logging import log_event
+from lib.workflow import ServiceConfig
 
 from .factory import build_tracker_mutation_backend
 from .interfaces import TrackerMutationBackend

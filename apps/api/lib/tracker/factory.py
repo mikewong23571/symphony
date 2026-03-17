@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import TypeVar
 
-from symphony.workflow import ServiceConfig
-from symphony.workflow.config import require_linear_tracker_config, require_plane_tracker_config
+from lib.workflow import ServiceConfig
+from lib.workflow.config import require_linear_tracker_config, require_plane_tracker_config
 
 from .interfaces import TrackerMutationBackend, TrackerReadClient
 from .linear import LinearPayloadError

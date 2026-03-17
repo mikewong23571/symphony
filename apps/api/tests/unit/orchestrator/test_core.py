@@ -9,13 +9,22 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from symphony.agent_runner import AgentRuntimeEvent, AttemptResult
-from symphony.agent_runner.events import UsageSnapshot
-from symphony.observability.events import (
+from lib.tracker import PlaneTrackerClient, PlaneTransportResponse
+from lib.tracker.models import Issue, IssueBlocker
+from lib.workflow import WorkflowRuntime
+from lib.workflow.config import (
+    ServiceConfig,
+    build_service_config,
+    require_linear_tracker_config,
+)
+from lib.workflow.loader import WorkflowDefinition
+from runtime.agent_runner import AgentRuntimeEvent, AttemptResult
+from runtime.agent_runner.events import UsageSnapshot
+from runtime.observability.events import (
     clear_runtime_invalidations,
     wait_for_runtime_invalidation,
 )
-from symphony.observability.runtime import (
+from runtime.observability.runtime import (
     RuntimeSnapshotUnavailableError,
     clear_runtime_refresh_request_file,
     clear_runtime_snapshot_file,
@@ -27,20 +36,11 @@ from symphony.observability.runtime import (
     get_runtime_snapshot_path,
     queue_runtime_refresh_request,
 )
-from symphony.observability.snapshots import parse_snapshot_timestamp
-from symphony.orchestrator import Orchestrator
-from symphony.orchestrator.core import CodexTotals, RunningEntry
-from symphony.orchestrator.recovery import load_recovery_state
-from symphony.tracker import PlaneTrackerClient, PlaneTransportResponse
-from symphony.tracker.models import Issue, IssueBlocker
-from symphony.workflow import WorkflowRuntime
-from symphony.workflow.config import (
-    ServiceConfig,
-    build_service_config,
-    require_linear_tracker_config,
-)
-from symphony.workflow.loader import WorkflowDefinition
-from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
+from runtime.observability.snapshots import parse_snapshot_timestamp
+from runtime.orchestrator import Orchestrator
+from runtime.orchestrator.core import CodexTotals, RunningEntry
+from runtime.orchestrator.recovery import load_recovery_state
+from runtime.workspace import WorkspaceManager, WorkspaceRemoveError
 
 
 @pytest.fixture(autouse=True)
@@ -378,7 +378,7 @@ def test_orchestrator_builds_owned_tracker_client_via_factory(
         built_configs.append(service_config)
         return fake_client
 
-    monkeypatch.setattr("symphony.orchestrator.core.build_tracker_read_client", build_client)
+    monkeypatch.setattr("runtime.orchestrator.core.build_tracker_read_client", build_client)
 
     orchestrator = Orchestrator(config=config)
 
@@ -392,7 +392,7 @@ def test_orchestrator_dispatches_plane_issue_and_schedules_continuation_retry(
 ) -> None:
     issue = build_issue(issue_id="plane-issue-1", identifier="ENG-101")
     config = build_plane_config(tmp_path=tmp_path)
-    monkeypatch.setattr("symphony.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
+    monkeypatch.setattr("runtime.orchestrator.core.CONTINUATION_RETRY_DELAY_MS", 60_000)
     transport = RecordingPlaneTransport(
         responses=[
             PlaneTransportResponse(
@@ -418,7 +418,7 @@ def test_orchestrator_dispatches_plane_issue_and_schedules_continuation_retry(
             ),
         ]
     )
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
 
     async def successful_worker_runner(**kwargs: object) -> AttemptResult:
         dispatched_issue = cast(Issue, kwargs["issue"])
@@ -645,7 +645,7 @@ def test_orchestrator_reconcile_cleans_terminal_plane_workspaces(
             ),
         ]
     )
-    monkeypatch.setattr("symphony.tracker.plane_client._default_plane_transport", transport)
+    monkeypatch.setattr("lib.tracker.plane_client._default_plane_transport", transport)
     started = asyncio.Event()
 
     async def hanging_worker_runner(**kwargs: object) -> AttemptResult:
@@ -706,7 +706,7 @@ def test_orchestrator_reschedules_retry_when_retry_candidate_fetch_fails(
 ) -> None:
     issue = build_issue()
     config = build_config(tmp_path=tmp_path)
-    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.INFO, logger="runtime.orchestrator.core")
 
     class FailingRetryTracker(FakeTrackerClient):
         def fetch_candidate_issues(self) -> list[Issue]:
@@ -917,7 +917,7 @@ def test_orchestrator_rebuilds_owned_tracker_client_when_tracker_config_changes(
         )
         return clients[len(built_project_slugs) - 1]
 
-    monkeypatch.setattr("symphony.orchestrator.core.build_tracker_read_client", build_client)
+    monkeypatch.setattr("runtime.orchestrator.core.build_tracker_read_client", build_client)
 
     async def run_test() -> None:
         orchestrator = Orchestrator(config=config, workflow_runtime=workflow_runtime)
@@ -1113,7 +1113,7 @@ def test_orchestrator_blocks_dispatch_on_invalid_reload_and_recovers(
     config = workflow_runtime.load_initial()
     tracker_client = FakeTrackerClient(candidate_batches=[[issue], [issue]])
     prompts_seen: list[str] = []
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     async def worker_runner(**kwargs: object) -> AttemptResult:
         config = kwargs["config"]
@@ -1334,7 +1334,7 @@ def test_orchestrator_logs_tracker_candidate_fetch_failures(
     tmp_path: Path,
 ) -> None:
     config = build_config(tmp_path=tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     class FailingTracker(FakeTrackerClient):
         def fetch_candidate_issues(self) -> list[Issue]:
@@ -1359,7 +1359,7 @@ def test_orchestrator_logs_running_state_refresh_failures(
 ) -> None:
     issue = build_issue()
     config = build_config(tmp_path=tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     class FailingRefreshTracker(FakeTrackerClient):
         def fetch_issue_states_by_ids(self, issue_ids: Sequence[str]) -> list[Issue]:
@@ -1398,7 +1398,7 @@ def test_orchestrator_logs_app_server_stderr_diagnostics(
 ) -> None:
     issue = build_issue()
     config = build_config(tmp_path=tmp_path)
-    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.INFO, logger="runtime.orchestrator.core")
 
     async def pending_attempt() -> AttemptResult:
         await asyncio.sleep(3600)
@@ -1451,7 +1451,7 @@ def test_orchestrator_distinguishes_startup_terminal_fetch_failures(
     tmp_path: Path,
 ) -> None:
     config = build_config(tmp_path=tmp_path)
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     class FailingTerminalTracker(FakeTrackerClient):
         def fetch_issues_by_states(self, state_names: Sequence[str]) -> list[Issue]:
@@ -1548,13 +1548,13 @@ def test_orchestrator_logs_before_remove_hook_start_failures(
     config = build_config(tmp_path=tmp_path, before_remove="echo cleanup")
     workspace_manager = WorkspaceManager(config.workspace.root)
     workspace_path = workspace_manager.ensure_workspace(issue.identifier).path
-    caplog.set_level(logging.INFO, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.INFO, logger="runtime.orchestrator.core")
 
     async def fail_run_hook(*args: object, **kwargs: object) -> object:
         del args, kwargs
         raise OSError("spawn failed")
 
-    monkeypatch.setattr("symphony.orchestrator.core.run_hook", fail_run_hook)
+    monkeypatch.setattr("runtime.orchestrator.core.run_hook", fail_run_hook)
 
     async def run_test() -> None:
         orchestrator = Orchestrator(
@@ -2085,7 +2085,7 @@ def test_orchestrator_tolerates_runtime_snapshot_publish_failures(tmp_path: Path
                 del owner_token
                 raise RuntimeSnapshotUnavailableError("snapshot disk unavailable")
 
-            monkeypatch.setattr("symphony.orchestrator.core.publish_runtime_snapshot", fail_publish)
+            monkeypatch.setattr("runtime.orchestrator.core.publish_runtime_snapshot", fail_publish)
 
             await orchestrator.startup()
 
@@ -2398,7 +2398,7 @@ def test_orchestrator_worker_exit_persists_retry_without_empty_recovery_gap(
             return path
 
         monkeypatch.setattr(
-            "symphony.orchestrator.core.publish_recovery_state",
+            "runtime.orchestrator.core.publish_recovery_state",
             record_recovery_publish,
         )
 
@@ -2510,7 +2510,7 @@ def test_orchestrator_tolerates_corrupt_recovery_files(
     assert recovery_path is not None
     recovery_path.parent.mkdir(parents=True, exist_ok=True)
     recovery_path.write_text("{not json", encoding="utf-8")
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     async def run_test() -> None:
         orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())
@@ -2564,7 +2564,7 @@ def test_orchestrator_rejects_recovery_files_with_non_string_session_ids(
         ),
         encoding="utf-8",
     )
-    caplog.set_level(logging.WARNING, logger="symphony.orchestrator.core")
+    caplog.set_level(logging.WARNING, logger="runtime.orchestrator.core")
 
     async def run_test() -> None:
         orchestrator = Orchestrator(config=config, tracker_client=FakeTrackerClient())

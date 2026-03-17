@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from symphony.workflow import (
+from lib.workflow import (
     WORKFLOW_PATH_ENV_VAR,
     MissingWorkflowFileError,
     WorkflowFrontMatterNotAMapError,

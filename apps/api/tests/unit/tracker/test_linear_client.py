@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from symphony.tracker import (
+from lib.tracker import (
     CREATE_ATTACHMENT_MUTATION,
     CREATE_COMMENT_MUTATION,
     DEFAULT_LINEAR_PAGE_SIZE,
@@ -24,7 +24,7 @@ from symphony.tracker import (
     LinearTrackerClient,
     LinearTransportResponse,
 )
-from symphony.workflow.config import LinearTrackerConfig
+from lib.workflow.config import LinearTrackerConfig
 
 
 class RecordingTransport:

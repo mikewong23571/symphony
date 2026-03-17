@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from symphony.agent_runner import (
+from lib.tracker.models import Issue, IssueBlocker
+from runtime.agent_runner import (
     DEFAULT_FALLBACK_PROMPT,
     PromptTemplateError,
     PromptTemplateParseError,
@@ -11,7 +12,6 @@ from symphony.agent_runner import (
     build_continuation_guidance,
     render_issue_prompt,
 )
-from symphony.tracker.models import Issue, IssueBlocker
 
 
 def build_issue() -> Issue:

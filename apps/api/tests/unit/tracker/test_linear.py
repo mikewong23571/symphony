@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from symphony.tracker import IssueBlocker, LinearPayloadError, normalize_linear_issue
+from lib.tracker import IssueBlocker, LinearPayloadError, normalize_linear_issue
 
 
 def test_normalize_linear_issue_normalizes_full_candidate_payload() -> None:

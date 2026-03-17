@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from symphony.workflow.config import LinearTrackerConfig
+from lib.workflow.config import LinearTrackerConfig
 
 from .linear import LinearPayloadError, normalize_linear_issue
 from .models import Issue

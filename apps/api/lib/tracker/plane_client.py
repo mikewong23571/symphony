@@ -9,7 +9,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from symphony.workflow.config import PlaneTrackerConfig
+from lib.workflow.config import PlaneTrackerConfig
 
 from .models import Issue
 from .plane import PlanePayloadError, normalize_plane_issue

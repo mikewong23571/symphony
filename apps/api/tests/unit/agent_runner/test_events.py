@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from symphony.agent_runner.events import extract_usage_snapshot
+from runtime.agent_runner.events import extract_usage_snapshot
 
 
 def test_extract_usage_snapshot_preserves_zero_token_values_for_absolute_totals() -> None:

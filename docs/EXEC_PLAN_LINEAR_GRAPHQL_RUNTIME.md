@@ -38,6 +38,10 @@ and continues the turn instead of failing with `unsupported_tool_call`.
   `uv run ruff check apps/api/symphony/agent_runner apps/api/symphony/tracker/linear_client.py apps/api/tests/unit/agent_runner`,
   and
   `uv run mypy apps/api/symphony/agent_runner apps/api/symphony/tracker/linear_client.py apps/api/tests/unit/agent_runner`.
+- [x] 2026-03-16 07:46Z: Recorded the follow-on Codex SDK migration in
+  `docs/EXEC_PLAN_CODEX_SDK_MIGRATION.md` and updated this plan so its transport assumptions match
+  the current repository state. `linear_graphql` remains implemented and validated, but the runtime
+  transport is now SDK-backed instead of repository-owned JSON-RPC.
 
 ## Surprises & Discoveries
 
@@ -67,6 +71,14 @@ and continues the turn instead of failing with `unsupported_tool_call`.
   far beyond the requested feature.
   Date/Author: 2026-03-16 / Codex
 
+- Decision: Preserve this ExecPlan as the record of `linear_graphql` capability semantics after the
+  later SDK migration, rather than rewriting it into a second transport-migration plan.
+  Rationale: the feature-level behavior introduced here is still current, but the transport decision
+  above was superseded by `docs/EXEC_PLAN_CODEX_SDK_MIGRATION.md`. Updating this plan in place keeps
+  a novice reader aligned with the current codebase while retaining the original implementation
+  rationale and validation evidence for the dynamic tool itself.
+  Date/Author: 2026-03-16 / Codex
+
 - Decision: Advertise `linear_graphql` only for Linear-backed workflows.
   Rationale: this repository now supports multiple tracker kinds. Advertising a Linear-only dynamic
   tool to Plane sessions would misrepresent available capabilities and invite invalid tool calls.
@@ -89,17 +101,22 @@ and continues the turn instead of failing with `unsupported_tool_call`.
 The Python runtime now matches the requested Elixir-style `linear_graphql` behavior on the critical
 path. Linear sessions advertise a dynamic tool during `thread/start`, supported tool calls execute
 locally with Symphony-managed auth, GraphQL error bodies are preserved for debugging, and the turn
-loop continues after the tool call completes. The main remaining gap is documentation alignment in
-the global spec and examples if this feature is meant to be surfaced as a supported repository
-capability rather than an internal runtime enhancement.
+loop continues after the tool call completes. That behavior survived the later Codex SDK transport
+migration recorded in `docs/EXEC_PLAN_CODEX_SDK_MIGRATION.md`, so the feature outcome in this plan
+is still current even though the original transport strategy is not. The remaining value of this
+document is therefore feature-level: it captures the `linear_graphql` contract, layering decisions,
+and validation evidence that must remain true regardless of whether the runtime transport is
+handwritten or SDK-backed.
 
 ## Context and Orientation
 
-The relevant runtime code lives under `apps/api/symphony/agent_runner/`. `client.py` owns the
-handshake with `codex app-server`, including `initialize`, `thread/start`, and `turn/start`.
-`runner.py` consumes stream messages for one turn and handles request-like messages such as
-approval prompts. `harness.py` is the higher-level loop that creates a workspace, starts a session,
-streams turns, and refreshes issue state between turns.
+The relevant runtime code lives under `apps/api/symphony/agent_runner/`. In the current repository,
+`client.py` is an SDK-backed transport adapter that starts `codex app-server`, performs the
+`initialize` / `thread/start` / `turn/start` handshake, and exposes the repository-local session
+callbacks that `runner.py` uses. `runner.py` consumes one turn of app-server notifications and
+handles request-like messages such as approval prompts and `item/tool/call`. `harness.py` is the
+higher-level loop that creates a workspace, starts a session, streams turns, and refreshes issue
+state between turns.
 
 Tracker transport code lives under `apps/api/symphony/tracker/`. `linear_client.py` already owns
 Linear HTTP requests and GraphQL payload decoding for the repository’s tracker reads and writes.
@@ -107,8 +124,10 @@ That file is therefore the correct place to add a raw GraphQL execution helper f
 
 A “dynamic tool” in this repository means a tool spec injected by the runtime into the Codex
 app-server session during `thread/start`. The app-server later asks the runtime to execute that
-tool via `item/tool/call`, and the runtime must answer with a JSON-RPC `result` payload that
-includes `success` and structured tool output.
+tool via `item/tool/call`, and the runtime must answer with a structured success or failure payload
+that includes `success` and tool output. In the current implementation, the SDK-backed transport
+still carries that same logical request/response flow even though the repository no longer owns the
+lowest-level JSON-RPC framing.
 
 ## Plan of Work
 
@@ -120,8 +139,8 @@ that as the text output item for dynamic tools.
 
 Update `apps/api/symphony/agent_runner/client.py` so `start_app_server_session(...)` accepts an
 optional list of dynamic tool specs and includes them in the `thread/start` params as
-`dynamicTools`. The existing handshake behavior must stay unchanged when no dynamic tools are
-provided.
+`dynamicTools`. In the current repository this happens through the SDK-backed transport adapter, but
+the handshake behavior must stay unchanged when no dynamic tools are provided.
 
 Update `apps/api/symphony/agent_runner/runner.py` so `stream_turn(...)` accepts an optional dynamic
 tool executor. When the app-server emits `item/tool/call`, extract the tool name and arguments from
@@ -247,3 +266,8 @@ Broader validation transcript:
 Revision note: created after implementation on 2026-03-16 to document the final design and the
 exact validation evidence for this feature, without modifying the existing multi-milestone Plane
 ExecPlan in `docs/EXEC_PLAN.md`.
+
+Revision note: updated on 2026-03-16 after completing `docs/EXEC_PLAN_CODEX_SDK_MIGRATION.md` so
+this plan no longer claims that the current runtime still owns handwritten JSON-RPC transport. The
+feature behavior and validation in this document remain authoritative for `linear_graphql`, while
+transport ownership now follows the SDK-backed design documented in the later migration plan.

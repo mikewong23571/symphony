@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
-from symphony.agent_runner.dynamic_tool import (
+from lib.workflow.config import LinearTrackerConfig, PlaneTrackerConfig, ServiceConfig
+from runtime.agent_runner.dynamic_tool import (
     LINEAR_GRAPHQL_TOOL_NAME,
     build_dynamic_tool_runtime,
     execute_dynamic_tool,
     linear_graphql_tool_spec,
 )
-from symphony.workflow.config import LinearTrackerConfig, PlaneTrackerConfig, ServiceConfig
 
 
 class FakeLinearClient:

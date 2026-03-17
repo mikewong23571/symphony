@@ -5,13 +5,13 @@ import json
 from pathlib import Path
 
 import pytest
-from symphony.agent_runner import (
+from lib.common.types import ServiceInfo
+from runtime.agent_runner import (
     AgentRuntimeEvent,
     AppServerSession,
     start_next_turn,
     stream_turn,
 )
-from symphony.common.types import ServiceInfo
 
 from .helpers import (
     FakeSdkClient,
@@ -583,7 +583,7 @@ def test_stream_turn_executes_sdk_tool_calls(
 
 
 async def _start_sdk_session(tmp_path: Path) -> AppServerSession:
-    from symphony.agent_runner import start_app_server_session
+    from runtime.agent_runner import start_app_server_session
 
     return await start_app_server_session(
         command="codex app-server",

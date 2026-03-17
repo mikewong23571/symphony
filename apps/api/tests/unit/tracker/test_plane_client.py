@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 import pytest
-from symphony.tracker import (
+from lib.tracker import (
     IssueBlocker,
     PlaneAPIRequestError,
     PlaneAPIStatusError,
@@ -14,8 +14,8 @@ from symphony.tracker import (
     PlaneTransportResponse,
     build_plane_work_item_collection_url,
 )
-from symphony.tracker.plane_client import DEFAULT_PLANE_PAGE_SIZE
-from symphony.workflow.config import PlaneTrackerConfig
+from lib.tracker.plane_client import DEFAULT_PLANE_PAGE_SIZE
+from lib.workflow.config import PlaneTrackerConfig
 
 
 class RecordingTransport:

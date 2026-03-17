@@ -9,26 +9,16 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-import symphony.agent_runner.harness as harness_module
-from symphony.agent_runner import AgentRuntimeEvent, run_issue_attempt
-from symphony.agent_runner.client import AppServerStartupError
-from symphony.common.types import ServiceInfo
-from symphony.tracker.models import Issue
-from symphony.workflow.config import ServiceConfig, build_service_config
-from symphony.workflow.loader import WorkflowDefinition
-from symphony.workspace import WorkspaceManager, WorkspaceRemoveError
+import runtime.agent_runner.harness as harness_module
+from lib.common.types import ServiceInfo
+from lib.tracker.models import Issue
+from lib.workflow.config import ServiceConfig, build_service_config
+from lib.workflow.loader import WorkflowDefinition
+from runtime.agent_runner import AgentRuntimeEvent, run_issue_attempt
+from runtime.agent_runner.client import AppServerStartupError
+from runtime.workspace import WorkspaceManager, WorkspaceRemoveError
 
 from .helpers import FAKE_APP_SERVER_PATH, collect_events
-from .legacy_transport import start_legacy_app_server_session
-
-
-@pytest.fixture(autouse=True)
-def use_legacy_app_server_transport(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        harness_module,
-        "start_app_server_session",
-        start_legacy_app_server_session,
-    )
 
 
 class FakeTrackerClient:
@@ -109,7 +99,7 @@ def build_config(
 def harness_log_capture(caplog: pytest.LogCaptureFixture) -> Iterator[pytest.LogCaptureFixture]:
     # Django local settings keep the symphony logger tree non-propagating, so
     # these tests must attach the capture handler directly.
-    logger = logging.getLogger("symphony.agent_runner.harness")
+    logger = logging.getLogger("runtime.agent_runner.harness")
     caplog.set_level(logging.INFO, logger=logger.name)
     logger.addHandler(caplog.handler)
     try:
@@ -146,13 +136,13 @@ def test_run_issue_attempt_reuses_thread_for_continuation_turns(tmp_path: Path) 
     logged_messages = [
         json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()
     ]
-    assert logged_messages[4]["method"] == "turn/start"
-    assert logged_messages[4]["params"]["threadId"] == "thr_123"
+    assert logged_messages[3]["method"] == "turn/start"
+    assert logged_messages[3]["params"]["threadId"] == "thr_123"
+    assert logged_messages[2]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
     assert logged_messages[3]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
-    assert logged_messages[4]["params"]["sandboxPolicy"] == {"type": "workspaceWrite"}
     assert (
         "Continue working in the existing thread"
-        in logged_messages[4]["params"]["input"][0]["text"]
+        in logged_messages[3]["params"]["input"][0]["text"]
     )
 
 
@@ -466,7 +456,7 @@ def test_run_issue_attempt_logs_hook_start_failures(
         del args, kwargs
         raise OSError("spawn failed")
 
-    monkeypatch.setattr("symphony.agent_runner.harness.run_hook", fail_run_hook)
+    monkeypatch.setattr("runtime.agent_runner.harness.run_hook", fail_run_hook)
 
     async def run_test() -> None:
         result = await run_issue_attempt(
@@ -703,7 +693,6 @@ def test_run_issue_attempt_stops_when_issue_refresh_returns_empty(tmp_path: Path
     ]
     assert [message["method"] for message in logged_messages] == [
         "initialize",
-        "initialized",
         "thread/start",
         "turn/start",
     ]

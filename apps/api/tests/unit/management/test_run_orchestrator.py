@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from lib.workflow import WORKFLOW_PATH_ENV_VAR
+from runtime.observability.runtime import get_runtime_observability_config
 from symphony.management.commands.run_orchestrator import Command
 from symphony.management.commands.run_orchestrator import Orchestrator as CommandOrchestrator
-from symphony.observability.runtime import get_runtime_observability_config
-from symphony.workflow import WORKFLOW_PATH_ENV_VAR
 
 MINIMAL_VALID_WORKFLOW = """---
 tracker:

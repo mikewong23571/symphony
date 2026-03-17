@@ -121,7 +121,7 @@ def _emit_with_last_resort(message: str) -> bool:
         return False
     try:
         record = logging.LogRecord(
-            name="symphony.observability.logging",
+            name="lib.common.logging",
             level=logging.ERROR,
             pathname=__file__,
             lineno=0,

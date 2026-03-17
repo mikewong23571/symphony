@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from symphony.observability.runtime import DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
-
 from .loader import WorkflowDefinition
 
 DEFAULT_LINEAR_ENDPOINT = "https://api.linear.app/graphql"
@@ -24,7 +22,7 @@ DEFAULT_CODEX_COMMAND = "codex app-server"
 DEFAULT_TURN_TIMEOUT_MS = 3_600_000
 DEFAULT_READ_TIMEOUT_MS = 5_000
 DEFAULT_STALL_TIMEOUT_MS = 300_000
-DEFAULT_SNAPSHOT_MAX_AGE_SECONDS = DEFAULT_RUNTIME_SNAPSHOT_MAX_AGE_SECONDS
+DEFAULT_SNAPSHOT_MAX_AGE_SECONDS = 120
 
 
 class WorkflowConfigError(Exception):

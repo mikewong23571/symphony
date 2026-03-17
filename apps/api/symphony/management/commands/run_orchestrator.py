@@ -5,16 +5,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from django.core.management.base import BaseCommand, CommandError, CommandParser
-
-from symphony.api.server import DEFAULT_HTTP_BIND_HOST, start_runtime_http_server
-from symphony.observability.logging import log_event
-from symphony.observability.runtime import configure_runtime_observability
-from symphony.orchestrator import Orchestrator
-from symphony.workflow import (
+from lib.common.logging import log_event
+from lib.workflow import (
     WorkflowConfigError,
     WorkflowError,
     WorkflowRuntime,
 )
+from runtime.observability.runtime import configure_runtime_observability
+from runtime.orchestrator import Orchestrator
+
+from symphony.api.server import DEFAULT_HTTP_BIND_HOST, start_runtime_http_server
 
 if TYPE_CHECKING:
     from symphony.api.server import RuntimeHTTPServer

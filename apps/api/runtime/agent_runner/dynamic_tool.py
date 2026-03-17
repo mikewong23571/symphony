@@ -6,12 +6,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from symphony.tracker.linear_client import (
+from lib.tracker.linear_client import (
     LinearAPIRequestError,
     LinearAPIStatusError,
     LinearTrackerClient,
 )
-from symphony.workflow.config import LinearTrackerConfig, PlaneTrackerConfig, ServiceConfig
+from lib.workflow.config import LinearTrackerConfig, PlaneTrackerConfig, ServiceConfig
 
 LINEAR_GRAPHQL_TOOL_NAME = "linear_graphql"
 LINEAR_GRAPHQL_TOOL_DESCRIPTION = (

@@ -8,12 +8,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from symphony.common.types import ServiceInfo
-from symphony.observability.logging import log_event
-from symphony.tracker.models import Issue
-from symphony.workflow.config import ServiceConfig
-from symphony.workspace import Workspace, WorkspaceError, WorkspaceManager, WorkspaceRemoveError
-from symphony.workspace.hooks import HookError, build_hook_start_error, run_hook
+from lib.common.logging import log_event
+from lib.common.types import ServiceInfo
+from lib.tracker.models import Issue
+from lib.workflow.config import ServiceConfig
+
+from runtime.workspace import Workspace, WorkspaceError, WorkspaceManager, WorkspaceRemoveError
+from runtime.workspace.hooks import HookError, build_hook_start_error, run_hook
 
 from .client import (
     AppServerDiagnosticContext,

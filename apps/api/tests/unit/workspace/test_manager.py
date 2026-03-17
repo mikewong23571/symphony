@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from symphony.workspace import (
+from runtime.workspace import (
     InvalidWorkspaceIdentifierError,
     UnsafeWorkspacePathError,
     WorkspaceManager,
@@ -129,7 +129,7 @@ def test_remove_temporary_artifacts_raises_on_removal_failure(
         del path
         raise OSError("permission denied")
 
-    monkeypatch.setattr("symphony.workspace.manager.shutil.rmtree", fail_rmtree)
+    monkeypatch.setattr("runtime.workspace.manager.shutil.rmtree", fail_rmtree)
 
     with pytest.raises(WorkspaceRemoveError, match="Could not remove temporary workspace artifact"):
         manager.remove_temporary_artifacts(workspace.path)

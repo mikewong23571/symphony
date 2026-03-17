@@ -5,9 +5,9 @@ import math
 from collections.abc import Iterator, Mapping
 
 import pytest
-from symphony.tracker import PlaneTrackerClient
-from symphony.tracker.linear_client import LinearAPIRequestError
-from symphony.tracker.write_contract import (
+from lib.tracker import PlaneTrackerClient
+from lib.tracker.linear_client import LinearAPIRequestError
+from lib.tracker.write_contract import (
     TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
@@ -23,13 +23,13 @@ from symphony.tracker.write_contract import (
     TrackerValidationError,
     TrackerWorkflowState,
 )
-from symphony.tracker.write_service import (
+from lib.tracker.write_service import (
     TrackerMutationService,
     build_tracker_mutation_service,
 )
-from symphony.workflow import MissingTrackerWorkspaceSlugError
-from symphony.workflow.config import build_service_config
-from symphony.workflow.loader import WorkflowDefinition
+from lib.workflow import MissingTrackerWorkspaceSlugError
+from lib.workflow.config import build_service_config
+from lib.workflow.loader import WorkflowDefinition
 
 
 class RecordingLogHandler(logging.Handler):
@@ -43,7 +43,7 @@ class RecordingLogHandler(logging.Handler):
 
 @pytest.fixture
 def write_service_logs() -> Iterator[list[str]]:
-    logger = logging.getLogger("symphony.tracker.write_service")
+    logger = logging.getLogger("lib.tracker.write_service")
     handler = RecordingLogHandler()
     original_level = logger.level
     logger.addHandler(handler)
@@ -227,7 +227,7 @@ def test_build_tracker_mutation_service_uses_factory(
     )
 
     monkeypatch.setattr(
-        "symphony.tracker.write_service.build_tracker_mutation_backend",
+        "lib.tracker.write_service.build_tracker_mutation_backend",
         lambda service_config: backend,
     )
 
