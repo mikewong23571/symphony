@@ -46,16 +46,4 @@ class TrackerIssueLinkMutationBackend(_TrackerMutationBackendBase, Protocol):
     ) -> TrackerIssueLink: ...
 
 
-class TrackerAttachmentMutationBackend(_TrackerMutationBackendBase, Protocol):
-    def create_attachment(
-        self,
-        *,
-        issue_id: str,
-        title: str,
-        url: str,
-        subtitle: str | None,
-        metadata: Mapping[str, JsonScalar],
-    ) -> TrackerIssueLink: ...
-
-
-type TrackerMutationBackend = TrackerIssueLinkMutationBackend | TrackerAttachmentMutationBackend
+type TrackerMutationBackend = TrackerIssueLinkMutationBackend

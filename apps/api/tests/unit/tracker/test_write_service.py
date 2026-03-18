@@ -8,7 +8,6 @@ import pytest
 from lib.tracker import PlaneTrackerClient
 from lib.tracker.linear_client import LinearAPIRequestError
 from lib.tracker.write_contract import (
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerGraphQLError,
@@ -17,7 +16,6 @@ from lib.tracker.write_contract import (
     TrackerIssueNotFoundError,
     TrackerIssueReference,
     TrackerPullRequestRequest,
-    TrackerPullRequestResult,
     TrackerRequestFailedError,
     TrackerTransitionRequest,
     TrackerValidationError,
@@ -151,48 +149,6 @@ class FakeMutationBackend:
         )
 
 
-class LegacyAttachmentBackend:
-    def __init__(self) -> None:
-        self.delegate = FakeMutationBackend()
-
-    @property
-    def issue_links(self) -> list[dict[str, object]]:
-        return self.delegate.issue_links
-
-    @property
-    def project_ref(self) -> str | None:
-        return self.delegate.project_ref
-
-    def get_issue_reference(self, issue_identifier: str) -> TrackerIssueReference | None:
-        return self.delegate.get_issue_reference(issue_identifier)
-
-    def list_workflow_states(self) -> list[TrackerWorkflowState]:
-        return self.delegate.list_workflow_states()
-
-    def create_comment(self, issue_id: str, body: str) -> TrackerComment:
-        return self.delegate.create_comment(issue_id, body)
-
-    def update_issue_state(self, issue_id: str, state_id: str) -> TrackerIssueReference:
-        return self.delegate.update_issue_state(issue_id, state_id)
-
-    def create_attachment(
-        self,
-        *,
-        issue_id: str,
-        title: str,
-        url: str,
-        subtitle: str | None,
-        metadata: Mapping[str, str | int | float | bool],
-    ) -> TrackerIssueLink:
-        return self.delegate.create_issue_link(
-            issue_id=issue_id,
-            title=title,
-            url=url,
-            subtitle=subtitle,
-            metadata=metadata,
-        )
-
-
 def test_add_comment_logs_applied_mutation(write_service_logs: list[str]) -> None:
     service = TrackerMutationService(backend=FakeMutationBackend(), project_ref="symphony")
 
@@ -235,111 +191,6 @@ def test_build_tracker_mutation_service_uses_factory(
 
     assert service.backend is backend
     assert service.project_ref == "factory-project"
-    assert service.project_slug == "factory-project"
-
-
-def test_tracker_contracts_accept_legacy_constructor_keywords() -> None:
-    issue = TrackerIssueReference(
-        id="issue-123",
-        identifier="SYM-123",
-        state_id="state-todo",
-        state_name="Todo",
-        team_id="team-1",
-        project_slug="symphony",
-    )
-    state = TrackerWorkflowState(id="state-todo", name="Todo", team_id="team-1")
-
-    assert issue.workflow_scope_id == "team-1"
-    assert issue.team_id == "team-1"
-    assert issue.project_ref == "symphony"
-    assert issue.project_slug == "symphony"
-    assert state.workflow_scope_id == "team-1"
-    assert state.team_id == "team-1"
-
-
-def test_tracker_mutation_service_accepts_legacy_project_slug_keyword() -> None:
-    service = TrackerMutationService(backend=FakeMutationBackend(), project_slug="symphony")
-
-    assert service.project_ref == "symphony"
-    assert service.project_slug == "symphony"
-
-
-def test_tracker_pull_request_result_accepts_legacy_attachment_fields() -> None:
-    result = TrackerPullRequestResult(
-        issue_id="issue-123",
-        issue_identifier="SYM-123",
-        status="applied",
-        attachment_id="attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-
-    assert result.issue_link == TrackerIssueLink(
-        id="attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-    assert result.attachment_id == "attachment-1"
-    assert result.title == "PR #1"
-    assert result.url == "https://github.com/acme/symphony/pull/1"
-    assert result.subtitle == "Open"
-    assert result.metadata == {"status": "open"}
-
-
-def test_tracker_pull_request_result_accepts_legacy_positional_attachment_fields() -> None:
-    result = TrackerPullRequestResult(
-        "issue-123",
-        "SYM-123",
-        "applied",
-        "attachment-1",
-        "PR #1",
-        "https://github.com/acme/symphony/pull/1",
-        "Open",
-        {"status": "open"},
-    )
-
-    assert result.issue_link == TrackerIssueLink(
-        id="attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-    assert result.attachment_id == "attachment-1"
-    assert result.title == "PR #1"
-    assert result.url == "https://github.com/acme/symphony/pull/1"
-    assert result.subtitle == "Open"
-    assert result.metadata == {"status": "open"}
-
-
-def test_tracker_pull_request_result_accepts_mixed_legacy_attachment_fields() -> None:
-    result = TrackerPullRequestResult(
-        "issue-123",
-        "SYM-123",
-        "applied",
-        "attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-
-    assert result.issue_link == TrackerIssueLink(
-        id="attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-    assert result.attachment_id == "attachment-1"
-    assert result.title == "PR #1"
-    assert result.url == "https://github.com/acme/symphony/pull/1"
-    assert result.subtitle == "Open"
-    assert result.metadata == {"status": "open"}
 
 
 def test_build_tracker_mutation_service_builds_plane_backend() -> None:
@@ -458,12 +309,10 @@ def test_attach_pull_request_normalizes_metadata_and_supports_repeated_urls() ->
     )
 
     assert first.issue_link.id == "attachment-1"
-    assert first.attachment_id == "attachment-1"
     assert second.issue_link.id == "attachment-1"
-    assert second.attachment_id == "attachment-1"
-    assert second.title == "PR #1"
-    assert second.url == "https://github.com/acme/symphony/pull/1"
-    assert second.subtitle == "Open"
+    assert second.issue_link.title == "PR #1"
+    assert second.issue_link.url == "https://github.com/acme/symphony/pull/1"
+    assert second.issue_link.subtitle == "Open"
     assert len(backend.issue_links) == 1
     assert second.issue_link.metadata == {
         "commit_count": 3,
@@ -471,7 +320,6 @@ def test_attach_pull_request_normalizes_metadata_and_supports_repeated_urls() ->
         "repository": "acme/symphony",
         "status": "open",
     }
-    assert second.metadata == second.issue_link.metadata
 
 
 def test_attach_pull_request_rejects_digit_prefixed_metadata_keys_before_backend_call() -> None:
@@ -513,37 +361,6 @@ def test_attach_pull_request_accepts_valid_metadata_keys() -> None:
     )
 
     assert result.issue_link.metadata == {"_branch1": "feature/sym-123"}
-    assert result.metadata == {"_branch1": "feature/sym-123"}
-
-
-def test_attach_pull_request_falls_back_to_legacy_create_attachment() -> None:
-    backend = LegacyAttachmentBackend()
-    service = TrackerMutationService(backend=backend, project_ref="symphony")
-
-    result = service.attach_pull_request(
-        TrackerPullRequestRequest(
-            issue_identifier="SYM-123",
-            url="https://github.com/acme/symphony/pull/4",
-            title="PR #4",
-            subtitle="Open",
-            branch_name=None,
-            repository=None,
-            status=None,
-            metadata={},
-        )
-    )
-
-    assert result.issue_link.id == "attachment-1"
-    assert backend.issue_links == [
-        {
-            "id": "attachment-1",
-            "issue_id": "issue-123",
-            "title": "PR #4",
-            "url": "https://github.com/acme/symphony/pull/4",
-            "subtitle": "Open",
-            "metadata": {},
-        }
-    ]
 
 
 def test_attach_pull_request_rejects_non_finite_metadata_numbers_before_backend_call() -> None:
@@ -608,15 +425,3 @@ def test_service_normalizes_linear_request_failure() -> None:
                 metadata={},
             )
         )
-
-
-def test_tracker_attachment_aliases_issue_link() -> None:
-    issue_link = TrackerAttachment(
-        id="attachment-1",
-        title="PR #1",
-        url="https://github.com/acme/symphony/pull/1",
-        subtitle="Open",
-        metadata={"status": "open"},
-    )
-
-    assert isinstance(issue_link, TrackerIssueLink)

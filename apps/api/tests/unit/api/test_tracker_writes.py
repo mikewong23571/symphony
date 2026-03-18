@@ -494,11 +494,11 @@ def test_tracker_pull_request_endpoint_uses_plane_workflow_backend_idempotently(
         _build_tracker_mutation_service.cache_clear()
 
     expected_json = {
-        "operation": "pull_request_attachment",
+        "operation": "pull_request_link",
         "status": "applied",
         "issue": {"id": "issue-123", "identifier": "ENG-123"},
         "pull_request": {
-            "attachment_id": "link-123",
+            "issue_link_id": "link-123",
             "title": "PR #1",
             "url": "https://github.com/acme/symphony/pull/1",
             "subtitle": None,
@@ -633,14 +633,14 @@ def test_tracker_pull_request_endpoint_updates_plane_link_title_on_replay(
     assert first_response.status_code == 200
     assert second_response.status_code == 200
     assert first_response.json()["pull_request"] == {
-        "attachment_id": "link-123",
+        "issue_link_id": "link-123",
         "title": "Old PR title",
         "url": "https://github.com/acme/symphony/pull/1",
         "subtitle": None,
         "metadata": {},
     }
     assert second_response.json()["pull_request"] == {
-        "attachment_id": "link-123",
+        "issue_link_id": "link-123",
         "title": "PR #1",
         "url": "https://github.com/acme/symphony/pull/1",
         "subtitle": None,
@@ -828,5 +828,4 @@ tracker:
     service = _build_tracker_mutation_service()
 
     assert service.project_ref == "runtime-project"
-    assert service.project_slug == "runtime-project"
     _build_tracker_mutation_service.cache_clear()

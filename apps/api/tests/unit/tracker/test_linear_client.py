@@ -461,9 +461,7 @@ def test_get_issue_reference_queries_by_human_identifier() -> None:
     assert issue.identifier == "SYM-042"
     assert issue.state_name == "Todo"
     assert issue.workflow_scope_id == "team-1"
-    assert issue.team_id == "team-1"
     assert issue.project_ref == "symphony"
-    assert issue.project_slug == "symphony"
     assert transport.calls[0]["variables"] == {
         "projectSlug": "symphony",
         "issueIdentifier": "SYM-042",
@@ -502,7 +500,6 @@ def test_list_workflow_states_returns_workflow_scoped_state_records() -> None:
         ("state-1", "Todo", "team-1"),
         ("state-2", "In Progress", "team-1"),
     ]
-    assert [state.team_id for state in states] == ["team-1", "team-1"]
     assert transport.calls[0]["query"] == FETCH_WORKFLOW_STATES_QUERY
     assert transport.calls[0]["variables"] == {
         "first": DEFAULT_LINEAR_PAGE_SIZE,
@@ -690,39 +687,3 @@ def test_create_issue_link_rejects_non_finite_metadata_before_transport() -> Non
         )
 
     assert transport.calls == []
-
-
-def test_create_attachment_aliases_create_issue_link() -> None:
-    transport = RecordingTransport(
-        response=LinearTransportResponse(
-            status_code=200,
-            body=json.dumps(
-                {
-                    "data": {
-                        "attachmentCreate": {
-                            "success": True,
-                            "attachment": {
-                                "id": "attachment-9",
-                                "title": "PR #9",
-                                "url": "https://github.com/acme/symphony/pull/9",
-                                "subtitle": "Merged",
-                                "metadata": {"status": "merged"},
-                            },
-                        }
-                    }
-                }
-            ),
-        )
-    )
-    client = LinearTrackerClient(make_tracker_config(), transport=transport)
-
-    attachment = client.create_attachment(
-        issue_id="issue-42",
-        title="PR #9",
-        url="https://github.com/acme/symphony/pull/9",
-        subtitle="Merged",
-        metadata={"status": "merged"},
-    )
-
-    assert attachment.id == "attachment-9"
-    assert attachment.metadata == {"status": "merged"}

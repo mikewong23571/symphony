@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol, TypeVar, cast
+from typing import TypeVar
 from urllib.parse import urlparse
 
 from lib.common.logging import log_event
@@ -43,18 +43,6 @@ logger = logging.getLogger(__name__)
 _T = TypeVar("_T")
 
 
-class _CreateIssueLinkCallable(Protocol):
-    def __call__(
-        self,
-        *,
-        issue_id: str,
-        title: str,
-        url: str,
-        subtitle: str | None,
-        metadata: Mapping[str, JsonScalar],
-    ) -> TrackerIssueLink: ...
-
-
 @dataclass(slots=True, init=False)
 class TrackerMutationService:
     backend: TrackerMutationBackend
@@ -64,19 +52,9 @@ class TrackerMutationService:
         self,
         backend: TrackerMutationBackend,
         project_ref: str | None = None,
-        *,
-        project_slug: str | None = None,
     ) -> None:
-        if project_ref is not None and project_slug is not None and project_ref != project_slug:
-            raise TypeError(
-                "'project_ref' and legacy alias 'project_slug' received conflicting values."
-            )
         self.backend = backend
-        self.project_ref = project_ref if project_ref is not None else project_slug
-
-    @property
-    def project_slug(self) -> str | None:
-        return self.project_ref
+        self.project_ref = project_ref
 
     def add_comment(self, request: TrackerCommentRequest) -> TrackerCommentResult:
         issue_identifier = request.issue_identifier.strip()
@@ -206,7 +184,7 @@ class TrackerMutationService:
             issue_identifier=result.issue_identifier,
             url=result.issue_link.url,
             status=result.status,
-            attachment_id=result.attachment_id,
+            issue_link_id=result.issue_link.id,
         )
         return result
 
@@ -274,34 +252,12 @@ class TrackerMutationService:
         subtitle: str | None,
         metadata: dict[str, JsonScalar],
     ) -> TrackerIssueLink:
-        create_issue_link = cast(
-            _CreateIssueLinkCallable | None,
-            getattr(self.backend, "create_issue_link", None),
-        )
-        if callable(create_issue_link):
-            return create_issue_link(
-                issue_id=issue_id,
-                title=title,
-                url=url,
-                subtitle=subtitle,
-                metadata=metadata,
-            )
-
-        create_attachment = cast(
-            _CreateIssueLinkCallable | None,
-            getattr(self.backend, "create_attachment", None),
-        )
-        if callable(create_attachment):
-            return create_attachment(
-                issue_id=issue_id,
-                title=title,
-                url=url,
-                subtitle=subtitle,
-                metadata=metadata,
-            )
-
-        raise AttributeError(
-            "Tracker mutation backend must implement create_issue_link() or create_attachment()."
+        return self.backend.create_issue_link(
+            issue_id=issue_id,
+            title=title,
+            url=url,
+            subtitle=subtitle,
+            metadata=metadata,
         )
 
     def _call_backend(self, func: Callable[[], _T]) -> _T:
@@ -377,7 +333,7 @@ class TrackerMutationService:
         url: str,
         status: str,
         issue_id: str | None = None,
-        attachment_id: str | None = None,
+        issue_link_id: str | None = None,
         exc: Exception | None = None,
     ) -> None:
         fields = {
@@ -385,7 +341,7 @@ class TrackerMutationService:
             "issue_identifier": issue_identifier,
             "url": url,
             "status": status,
-            "attachment_id": attachment_id,
+            "issue_link_id": issue_link_id,
         }
         if exc is not None:
             fields["error_code"] = getattr(exc, "code", exc.__class__.__name__)

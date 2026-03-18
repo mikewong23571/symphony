@@ -33,7 +33,6 @@ from .plane_client import (
     build_plane_work_item_collection_url,
 )
 from .write_contract import (
-    TrackerAttachment,
     TrackerComment,
     TrackerCommentRequest,
     TrackerCommentResult,
@@ -87,7 +86,6 @@ __all__ = [
     "PlaneTrackerClient",
     "PlaneTransportResponse",
     "TrackerMutationBackend",
-    "TrackerAttachment",
     "TrackerComment",
     "TrackerCommentRequest",
     "TrackerCommentResult",

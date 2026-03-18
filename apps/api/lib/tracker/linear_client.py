@@ -13,7 +13,6 @@ from .linear import LinearPayloadError, normalize_linear_issue
 from .models import Issue
 from .write_contract import (
     JsonScalar,
-    TrackerAttachment,
     TrackerComment,
     TrackerIssueLink,
     TrackerIssueReference,
@@ -450,23 +449,6 @@ class LinearTrackerClient:
         mutation = _extract_mutation_payload(payload, "attachmentCreate")
         return _extract_issue_link(mutation)
 
-    def create_attachment(
-        self,
-        *,
-        issue_id: str,
-        title: str,
-        url: str,
-        subtitle: str | None,
-        metadata: Mapping[str, JsonScalar],
-    ) -> TrackerAttachment:
-        return self.create_issue_link(
-            issue_id=issue_id,
-            title=title,
-            url=url,
-            subtitle=subtitle,
-            metadata=metadata,
-        )
-
     def _fetch_graphql_payload(
         self,
         *,
@@ -761,7 +743,7 @@ def _extract_issue_link(mutation: Mapping[str, Any]) -> TrackerIssueLink:
     attachment = mutation.get("attachment")
     if not isinstance(attachment, Mapping):
         raise LinearPayloadError("Linear attachmentCreate response is missing attachment data.")
-    attachment_id = _require_string(
+    issue_link_id = _require_string(
         attachment,
         "id",
         "Linear attachmentCreate response is missing attachment.id.",
@@ -787,7 +769,7 @@ def _extract_issue_link(mutation: Mapping[str, Any]) -> TrackerIssueLink:
     else:
         normalized_metadata = _normalize_attachment_metadata(metadata)
     return TrackerIssueLink(
-        id=attachment_id,
+        id=issue_link_id,
         title=title,
         url=url,
         subtitle=subtitle,
